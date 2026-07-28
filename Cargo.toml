@@ -3,6 +3,10 @@ name = "mute"
 version = "0.1.0"
 edition = "2021"
 description = "minimal user text environment — a distraction-free terminal writing tool"
+build = "build.rs"
+
+[build-dependencies]
+winresource = "0.1"
 
 [dependencies]
 ratatui = "0.29"

@@ -37,6 +37,41 @@ Beyond the menu, `mute` has four more screens:
 `mute` is a single Rust binary. Pick whichever path suits you — both
 produce the same `mute` / `mute.exe` executable.
 
+### prebuilt binaries (easiest)
+
+Open the [Releases](../../releases) page, grab the archive that matches
+your platform, and unpack it. The `continuous build (…)` entry at the top
+reflects the latest commit on `main` and is rebuilt on every push; pick a
+`vX.Y.Z` tag entry for a frozen build.
+
+| Platform                | Archive                                                                         | Run it |
+|-------------------------|---------------------------------------------------------------------------------|---|
+| Linux (x86_64)          | `mute-linux-x86_64-<date>-<shortsha>.tar.gz`                                   | `tar -xzf … && ./mute-linux-x86_64-<date>-<shortsha>/mute` |
+| macOS Intel             | `mute-macos-x86_64-<date>-<shortsha>.tar.gz`                                    | `tar -xzf … && ./mute-macos-x86_64-<date>-<shortsha>/mute` |
+| macOS Apple Silicon     | `mute-macos-aarch64-<date>-<shortsha>.tar.gz`                                   | `tar -xzf … && ./mute-macos-aarch64-<date>-<shortsha>/mute` |
+| Windows (x86_64)        | `mute-windows-x86_64-<date>-<shortsha>.zip`                                     | unzip, then double-click `mute.exe` |
+
+To verify a download, fetch `checksums.txt` from the same release and run:
+
+```bash
+# Linux / macOS
+tar -xzf mute-linux-x86_64-<date>-<shortsha>.tar.gz
+sha256sum -c checksums.txt
+# Windows (PowerShell)
+Expand-Archive .\mute-windows-x86_64-<date>-<shortsha>.zip
+Get-FileHash .\mute-windows-x86_64-<date>-<shortsha>\mute.exe
+```
+
+Or move the unpacked binary onto your `PATH` — see [below](#putting-the-binary-on-path).
+
+> **SmartScreen / Gatekeeper note.** When the maintainer has wired up the
+> signing secrets (see [maintainers](#maintainers)), the Windows and macOS
+> binaries are signed *and* the macOS one is notarized — double-clicking
+> runs them without prompts. Without signing configured, Windows shows a
+> SmartScreen warning and macOS blocks the binary on first launch; either
+> upgrade to a tagged release (which the maintainer signs by hand) or build
+> from source.
+
 ### quick install (from the git repo)
 
 ```bash
@@ -234,7 +269,7 @@ Other extensions are ignored by design — `mute` is for plain text.
 - **Save** (`Ctrl+S`) writes to `<path>.tmp` and renames it over the target
   — atomic; a crash mid-save can't corrupt the document. A small `saved`
   indicator flashes bottom-right for two seconds.
-- **Autosave** is set in **Settings ▸ autosave** (15 s / 30 s / 1 min /
+- **Autosave** is set in **Settings > autosave** (15 s / 30 s / 1 min /
   5 min). It only ticks while the buffer is modified and only inside the
   editor or focus mode.
 - **Fuzzy search** uses position + consecutive-character + word-boundary
@@ -246,6 +281,41 @@ Other extensions are ignored by design — `mute` is for plain text.
 - **Goals** (`Ctrl+P` → *goals*) shows word count, character count, and a
   rough reading-time estimate (`max(1, words / 200)` minutes). No streaks,
   no achievements, no network sync — deliberately so.
+
+## maintainers
+
+### code-signing and notarization
+
+The release workflow `.github/workflows/release.yml` will code-sign Windows
+binaries and codesign + notarize macOS binaries **when the relevant GitHub
+secrets are set**. If any are missing, those steps are skipped and the
+workflow emits a `::warning::` annotation; unsigned binaries still publish,
+so CI stays green from day one.
+
+#### required GitHub secrets
+
+Set these under `Settings > Secrets and variables > Actions`:
+
+| Secret                | What it is |
+|-----------------------|---|
+| `WINDOWS_CERT_B64`    | Base64 of your Authenticode `.pfx`. Linux/GNU: `base64 -w0 mute.pfx`. macOS/BSD: `base64 -i mute.pfx | tr -d "\n"`. |
+| `WINDOWS_CERT_PASS`   | Password for that `.pfx`. |
+| `APPLE_CERT_B64`      | Base64 of your **Developer ID Application** `.p12`. Linux/GNU: `base64 -w0 mute.p12`. macOS/BSD: `base64 -i mute.p12 | tr -d "\n"`. Plain "Apple Development" certs do *not* sign for Gatekeeper. |
+| `APPLE_CERT_PASS`     | Password for that `.p12`. |
+| `APPLE_ID`            | Apple ID email tied to the Developer Program enrollment. |
+| `APPLE_APP_PASS`      | **App-specific password** from appleid.apple.com — *not* your main Apple ID password. |
+| `APPLE_TEAM_ID`       | The 10-character Team ID from the Apple Developer portal. |
+
+#### honest caveats
+
+- **OV code-signing certs** don't bypass SmartScreen instantly; reputation
+  builds over weeks of downloads. **EV certs** do, but require a hardware
+  token, which is awkward in CI.
+- `xcrun notarytool submit --wait` adds **2–10 minutes** per macOS build to
+  the CI run (Apple's queueing is variable).
+- macOS notarization is performed on the packaged `.tar.gz` archive. Gatekeeper
+  verifies the ticket on first launch (online). To make offline verification
+  work after extraction, run `xcrun stapler staple /path/to/mute` manually.
 
 ## project structure
 
