@@ -185,7 +185,7 @@ jobs:
               echo "ASSET=$NAME.tar.gz" >> "$GITHUB_ENV"
               ;;
             zip)
-              (cd dist && zip -qr "$NAME.zip" "$NAME")
+              (cd dist && pwsh -NoProfile -Command "Compress-Archive -Path '$NAME' -DestinationPath '$NAME.zip'")
               echo "ASSET=$NAME.zip" >> "$GITHUB_ENV"
               ;;
           esac
