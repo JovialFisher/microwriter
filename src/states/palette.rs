@@ -66,8 +66,15 @@ impl PaletteState {
 
     pub fn filter(&mut self) {
         let all_items = vec![
-            "new note", "open note", "toggle wrap", "toggle line numbers",
-            "focus mode", "goals", "settings", "help", "quit",
+            "new note",
+            "open note",
+            "toggle wrap",
+            "toggle line numbers",
+            "focus mode",
+            "goals",
+            "settings",
+            "help",
+            "quit",
         ];
         if self.query.is_empty() {
             self.items = all_items.iter().map(|s| s.to_string()).collect();

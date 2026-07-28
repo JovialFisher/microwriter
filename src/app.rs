@@ -5,8 +5,8 @@ use crate::config::Config;
 use crate::editor::Editor;
 use crate::states::search::fuzzy_match;
 use crate::states::{
-    BrowserAction, BrowserState, MenuAction, MenuState, PaletteAction, PaletteState,
-    SearchAction, SearchState, SettingsAction, SettingsState,
+    BrowserAction, BrowserState, MenuAction, MenuState, PaletteAction, PaletteState, SearchAction,
+    SearchState, SettingsAction, SettingsState,
 };
 use crate::storage::Storage;
 
@@ -20,7 +20,7 @@ pub enum Mode {
     Settings,
     CommandPalette,
     Help,
-    FocusMode,
+    Focus,
     RecoveryPrompt,
     Goals,
 }
@@ -117,21 +117,21 @@ impl App {
         if key.modifiers == KeyModifiers::CONTROL {
             match key.code {
                 KeyCode::Char('c') => {
-                    if self.mode == Mode::Editor || self.mode == Mode::FocusMode {
+                    if self.mode == Mode::Editor || self.mode == Mode::Focus {
                         self.save_current_file();
                     }
                     self.should_quit = true;
                     return false;
                 }
                 KeyCode::Char('q') => {
-                    if self.mode == Mode::Editor || self.mode == Mode::FocusMode {
+                    if self.mode == Mode::Editor || self.mode == Mode::Focus {
                         self.save_current_file();
                     }
                     self.should_quit = true;
                     return false;
                 }
                 KeyCode::Char('s') => {
-                    if self.mode == Mode::Editor || self.mode == Mode::FocusMode {
+                    if self.mode == Mode::Editor || self.mode == Mode::Focus {
                         self.save_current_file();
                     }
                     return true;
@@ -159,7 +159,7 @@ impl App {
         match self.mode {
             Mode::Startup => self.dispatch_menu(key),
             Mode::Editor => self.dispatch_editor(key),
-            Mode::FocusMode => self.dispatch_focus(key),
+            Mode::Focus => self.dispatch_focus(key),
             Mode::FileBrowser => self.dispatch_browser(key),
             Mode::Search => self.dispatch_search(key),
             Mode::RecentNotes => self.dispatch_recent(key),
@@ -180,10 +180,8 @@ impl App {
                 return false;
             }
             MenuAction::Select => self.select_menu_item(),
-            MenuAction::Shortcut(c) => {
-                if self.menu.select_by_shortcut(c) {
-                    self.select_menu_item();
-                }
+            MenuAction::Shortcut(c) if self.menu.select_by_shortcut(c) => {
+                self.select_menu_item();
             }
             _ => {}
         }
@@ -348,11 +346,9 @@ impl App {
                     self.recent_index += 1;
                 }
             }
-            KeyCode::Enter => {
-                if !self.storage.recent_files.is_empty() {
-                    let path = self.storage.recent_files[self.recent_index].path.clone();
-                    self.open_file(&path);
-                }
+            KeyCode::Enter if !self.storage.recent_files.is_empty() => {
+                let path = self.storage.recent_files[self.recent_index].path.clone();
+                self.open_file(&path);
             }
             _ => {}
         }
@@ -418,11 +414,8 @@ impl App {
     }
 
     fn dispatch_goals(&mut self, key: KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Esc => {
-                self.mode = Mode::Startup;
-            }
-            _ => {}
+        if key.code == KeyCode::Esc {
+            self.mode = Mode::Startup;
         }
         true
     }
@@ -444,7 +437,9 @@ impl App {
 
     pub fn new_note(&mut self) {
         let filename = if self.config.timestamp_filenames {
-            chrono::Local::now().format("%Y-%m-%d-%H-%M.txt").to_string()
+            chrono::Local::now()
+                .format("%Y-%m-%d-%H-%M.txt")
+                .to_string()
         } else {
             "untitled.txt".to_string()
         };
@@ -494,9 +489,9 @@ impl App {
     fn filter_browser_items(&mut self) {
         self.refresh_browser();
         let query = self.browser.search.to_lowercase();
-        self.browser.items.retain(|item| {
-            item.to_lowercase().contains(&query)
-        });
+        self.browser
+            .items
+            .retain(|item| item.to_lowercase().contains(&query));
         if self.browser.index >= self.browser.items.len() {
             self.browser.index = self.browser.items.len().saturating_sub(1);
         }
@@ -548,10 +543,16 @@ impl App {
                         let ext = ext.to_string_lossy().to_lowercase();
                         if matches!(ext.as_str(), "txt" | "md" | "rst" | "log") {
                             let full_path = path.to_string_lossy().to_string();
-                            let display = path.file_name()
+                            let display = path
+                                .file_name()
                                 .map(|n| n.to_string_lossy().to_string())
                                 .unwrap_or_default();
-                            let boost = if self.storage.recent_files.iter().any(|r| r.path == full_path) {
+                            let boost = if self
+                                .storage
+                                .recent_files
+                                .iter()
+                                .any(|r| r.path == full_path)
+                            {
                                 10
                             } else {
                                 0
@@ -576,7 +577,10 @@ impl App {
             candidates.sort_by(|(_, _, a), (_, _, b)| b.cmp(a));
         }
 
-        self.search.results = candidates.into_iter().map(|(d, p, _)| format!("{}|{}", d, p)).collect();
+        self.search.results = candidates
+            .into_iter()
+            .map(|(d, p, _)| format!("{}|{}", d, p))
+            .collect();
 
         for recent in &self.storage.recent_files {
             let entry = format!("{}|{}", recent.display_name, recent.path);
@@ -647,7 +651,7 @@ impl App {
                 self.mode = Mode::Editor;
             }
             "focus mode" => {
-                self.mode = Mode::FocusMode;
+                self.mode = Mode::Focus;
             }
             "goals" => {
                 self.mode = Mode::Goals;
@@ -720,7 +724,7 @@ impl App {
         if self.config.autosave == "disabled" {
             return;
         }
-        if self.mode != Mode::Editor && self.mode != Mode::FocusMode {
+        if self.mode != Mode::Editor && self.mode != Mode::Focus {
             return;
         }
         if !self.editor.modified {
@@ -752,7 +756,7 @@ impl App {
     }
 
     pub fn save_state(&self) -> std::io::Result<()> {
-        self.config.save().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        self.config.save().map_err(std::io::Error::other)?;
         self.storage.save()?;
         Ok(())
     }
@@ -762,10 +766,28 @@ impl App {
             "appearance" => self.config.theme.clone(),
             "cursor" => self.config.cursor_style.clone(),
             "line numbers" => self.config.line_numbers.clone(),
-            "word wrap" => if self.config.wrap { "on".into() } else { "off".into() },
+            "word wrap" => {
+                if self.config.wrap {
+                    "on".into()
+                } else {
+                    "off".into()
+                }
+            }
             "autosave" => self.config.autosave.clone(),
-            "timestamp filenames" => if self.config.timestamp_filenames { "on".into() } else { "off".into() },
-            "tabs/spaces" => if self.config.use_tabs { "tabs".into() } else { "spaces".into() },
+            "timestamp filenames" => {
+                if self.config.timestamp_filenames {
+                    "on".into()
+                } else {
+                    "off".into()
+                }
+            }
+            "tabs/spaces" => {
+                if self.config.use_tabs {
+                    "tabs".into()
+                } else {
+                    "spaces".into()
+                }
+            }
             _ => String::new(),
         }
     }

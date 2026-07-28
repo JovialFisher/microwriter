@@ -42,7 +42,8 @@ impl Editor {
     }
 
     pub fn word_count(&self) -> usize {
-        self.lines.iter()
+        self.lines
+            .iter()
             .map(|line| line.split_whitespace().count())
             .sum()
     }
@@ -53,7 +54,11 @@ impl Editor {
 
     pub fn reading_time_minutes(&self) -> usize {
         let words = self.word_count();
-        if words == 0 { 0 } else { cmp::max(1, words / 200) }
+        if words == 0 {
+            0
+        } else {
+            cmp::max(1, words / 200)
+        }
     }
 
     // ─── Cursor Movement ──────────────────────────────────────
@@ -103,11 +108,16 @@ impl Editor {
         let line = &self.lines[self.cursor_row];
         let mut col = self.cursor_col;
         // Skip whitespace
-        while col > 0 && line.chars().nth(col - 1).map_or(false, |c| c.is_whitespace()) {
+        while col > 0 && line.chars().nth(col - 1).is_some_and(|c| c.is_whitespace()) {
             col -= 1;
         }
         // Skip word chars
-        while col > 0 && line.chars().nth(col - 1).map_or(false, |c| !c.is_whitespace()) {
+        while col > 0
+            && line
+                .chars()
+                .nth(col - 1)
+                .is_some_and(|c| !c.is_whitespace())
+        {
             col -= 1;
         }
         self.cursor_col = col;
@@ -120,11 +130,11 @@ impl Editor {
         let mut col = self.cursor_col;
         let len = line.len();
         // Skip word chars
-        while col < len && line.chars().nth(col).map_or(false, |c| !c.is_whitespace()) {
+        while col < len && line.chars().nth(col).is_some_and(|c| !c.is_whitespace()) {
             col += 1;
         }
         // Skip whitespace
-        while col < len && line.chars().nth(col).map_or(false, |c| c.is_whitespace()) {
+        while col < len && line.chars().nth(col).is_some_and(|c| c.is_whitespace()) {
             col += 1;
         }
         self.cursor_col = col;
@@ -181,7 +191,8 @@ impl Editor {
     pub fn insert_char(&mut self, c: char) {
         self.modified = true;
         let line = &mut self.lines[self.cursor_row];
-        let byte_pos = line.char_indices()
+        let byte_pos = line
+            .char_indices()
             .nth(self.cursor_col)
             .map(|(i, _)| i)
             .unwrap_or(line.len());
@@ -193,7 +204,8 @@ impl Editor {
     pub fn insert_newline(&mut self) {
         self.modified = true;
         let line = &mut self.lines[self.cursor_row];
-        let byte_pos = line.char_indices()
+        let byte_pos = line
+            .char_indices()
             .nth(self.cursor_col)
             .map(|(i, _)| i)
             .unwrap_or(line.len());
@@ -210,7 +222,8 @@ impl Editor {
         if self.cursor_col > 0 {
             self.modified = true;
             let line = &mut self.lines[self.cursor_row];
-            let byte_pos = line.char_indices()
+            let byte_pos = line
+                .char_indices()
                 .nth(self.cursor_col - 1)
                 .map(|(i, _)| i)
                 .unwrap_or(0);
@@ -233,7 +246,8 @@ impl Editor {
         if self.cursor_col < line_len {
             self.modified = true;
             let line = &mut self.lines[self.cursor_row];
-            let byte_pos = line.char_indices()
+            let byte_pos = line
+                .char_indices()
                 .nth(self.cursor_col)
                 .map(|(i, _)| i)
                 .unwrap_or(line.len());
@@ -248,7 +262,9 @@ impl Editor {
     // ─── Helpers ──────────────────────────────────────────────
 
     fn current_line_len(&self) -> usize {
-        self.lines.get(self.cursor_row).map_or(0, |l| l.chars().count())
+        self.lines
+            .get(self.cursor_row)
+            .map_or(0, |l| l.chars().count())
     }
 
     fn ensure_scroll(&mut self) {

@@ -1,3 +1,4 @@
+use crate::app::{App, Mode};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -5,7 +6,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
-use crate::app::{App, Mode};
 
 pub fn render(f: &mut Frame, app: &App) {
     let bg = app.get_theme_bg();
@@ -20,7 +20,7 @@ pub fn render(f: &mut Frame, app: &App) {
     match app.mode {
         Mode::Startup => render_startup(f, app, area),
         Mode::Editor => render_editor(f, app, area),
-        Mode::FocusMode => render_focus(f, app, area),
+        Mode::Focus => render_focus(f, app, area),
         Mode::FileBrowser => render_file_browser(f, app, area),
         Mode::Search => render_search(f, app, area),
         Mode::RecentNotes => render_recent(f, app, area),
@@ -42,25 +42,27 @@ fn render_startup(f: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Fill(1),
-            Constraint::Length(1), // title
-            Constraint::Length(1), // tagline
-            Constraint::Length(1), // spacing
+            Constraint::Length(1),                           // title
+            Constraint::Length(1),                           // tagline
+            Constraint::Length(1),                           // spacing
             Constraint::Length(app.menu.items.len() as u16), // menu
             Constraint::Fill(1),
         ])
         .split(area);
 
     // Title
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled("mute", Style::default().fg(fg).add_modifier(Modifier::BOLD)),
-    ]))
+    let title = Paragraph::new(Line::from(vec![Span::styled(
+        "mute",
+        Style::default().fg(fg).add_modifier(Modifier::BOLD),
+    )]))
     .alignment(Alignment::Center);
     f.render_widget(title, v_chunks[1]);
 
     // Tagline
-    let tagline = Paragraph::new(Line::from(vec![
-        Span::styled("minimal user text environment", Style::default().fg(dim)),
-    ]))
+    let tagline = Paragraph::new(Line::from(vec![Span::styled(
+        "minimal user text environment",
+        Style::default().fg(dim),
+    )]))
     .alignment(Alignment::Center);
     f.render_widget(tagline, v_chunks[2]);
 
@@ -131,11 +133,7 @@ fn render_editor(f: &mut Frame, app: &App, area: Rect) {
                         if is_cursor_line {
                             format!("{:>4}  ", line_num)
                         } else {
-                            let diff = if line_num > cursor_line {
-                                line_num - cursor_line
-                            } else {
-                                cursor_line - line_num
-                            };
+                            let diff = line_num.abs_diff(cursor_line);
                             format!("{:>4}  ", diff)
                         }
                     }
@@ -176,12 +174,17 @@ fn render_editor(f: &mut Frame, app: &App, area: Rect) {
             "{} · {} words · {}",
             app.display_path(),
             app.editor.word_count(),
-            if app.editor.modified { "modified" } else { "saved" }
+            if app.editor.modified {
+                "modified"
+            } else {
+                "saved"
+            }
         );
         let combined = format!("{} {}", "─".repeat(area.width as usize / 2), status_text);
-        let status_line = Paragraph::new(Line::from(vec![
-            Span::styled(&combined, Style::default().fg(dim)),
-        ]));
+        let status_line = Paragraph::new(Line::from(vec![Span::styled(
+            &combined,
+            Style::default().fg(dim),
+        )]));
         f.render_widget(status_line, v_chunks[1]);
     }
 
@@ -195,9 +198,10 @@ fn render_editor(f: &mut Frame, app: &App, area: Rect) {
                     width: 6,
                     height: 1,
                 };
-                let msg = Paragraph::new(Line::from(vec![
-                    Span::styled(&app.status_message, Style::default().fg(dim)),
-                ]))
+                let msg = Paragraph::new(Line::from(vec![Span::styled(
+                    &app.status_message,
+                    Style::default().fg(dim),
+                )]))
                 .alignment(Alignment::Right);
                 f.render_widget(msg, msg_area);
             }
@@ -254,16 +258,18 @@ fn render_file_browser(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // Breadcrumb
-    let breadcrumb = Paragraph::new(Line::from(vec![
-        Span::styled(&app.browser.path, Style::default().fg(dim)),
-    ]))
+    let breadcrumb = Paragraph::new(Line::from(vec![Span::styled(
+        &app.browser.path,
+        Style::default().fg(dim),
+    )]))
     .alignment(Alignment::Left);
     f.render_widget(breadcrumb, v_chunks[0]);
 
     // Separator
-    let sep = Paragraph::new(Line::from(vec![
-        Span::styled("─".repeat(area.width as usize), Style::default().fg(dim)),
-    ]));
+    let sep = Paragraph::new(Line::from(vec![Span::styled(
+        "─".repeat(area.width as usize),
+        Style::default().fg(dim),
+    )]));
     f.render_widget(sep, v_chunks[1]);
 
     // Files
@@ -283,15 +289,7 @@ fn render_file_browser(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(dim)
             };
-            let sel_style = if is_selected {
-                style
-            } else {
-                style
-            };
-            Line::from(vec![
-                Span::styled(prefix, sel_style),
-                Span::styled(item, sel_style),
-            ])
+            Line::from(vec![Span::styled(prefix, style), Span::styled(item, style)])
         })
         .collect();
 
@@ -307,9 +305,10 @@ fn render_file_browser(f: &mut Frame, app: &App, area: Rect) {
         ]));
         f.render_widget(search_line, v_chunks[3]);
     } else {
-        let hint = Paragraph::new(Line::from(vec![
-            Span::styled("/ search  h home  enter open  esc back", Style::default().fg(dim)),
-        ]));
+        let hint = Paragraph::new(Line::from(vec![Span::styled(
+            "/ search  h home  enter open  esc back",
+            Style::default().fg(dim),
+        )]));
         f.render_widget(hint, v_chunks[3]);
     }
 }
@@ -329,9 +328,10 @@ fn render_search(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    let label = Paragraph::new(Line::from(vec![
-        Span::styled("search", Style::default().fg(dim)),
-    ]))
+    let label = Paragraph::new(Line::from(vec![Span::styled(
+        "search",
+        Style::default().fg(dim),
+    )]))
     .alignment(Alignment::Center);
     f.render_widget(label, v_chunks[0]);
 
@@ -366,9 +366,10 @@ fn render_search(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     if results.is_empty() && !app.search.query.is_empty() {
-        let empty = Paragraph::new(Line::from(vec![
-            Span::styled("  no results", Style::default().fg(dim)),
-        ]))
+        let empty = Paragraph::new(Line::from(vec![Span::styled(
+            "  no results",
+            Style::default().fg(dim),
+        )]))
         .alignment(Alignment::Center);
         f.render_widget(empty, v_chunks[3]);
     } else {
@@ -391,15 +392,17 @@ fn render_recent(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled("recent notes", Style::default().fg(dim)),
-    ]))
+    let title = Paragraph::new(Line::from(vec![Span::styled(
+        "recent notes",
+        Style::default().fg(dim),
+    )]))
     .alignment(Alignment::Center);
     f.render_widget(title, v_chunks[0]);
 
-    let sep = Paragraph::new(Line::from(vec![
-        Span::styled("─".repeat(area.width as usize), Style::default().fg(dim)),
-    ]))
+    let sep = Paragraph::new(Line::from(vec![Span::styled(
+        "─".repeat(area.width as usize),
+        Style::default().fg(dim),
+    )]))
     .alignment(Alignment::Center);
     f.render_widget(sep, v_chunks[1]);
 
@@ -434,15 +437,45 @@ fn render_recent(f: &mut Frame, app: &App, area: Rect) {
     let mut global_idx = 0;
     let recent_idx = app.recent_index;
 
-    add_recent_group(&mut lines, &mut global_idx, recent_idx, "today", &today, fg, dim, accent);
-    add_recent_group(&mut lines, &mut global_idx, recent_idx, "yesterday", &yesterday, fg, dim, accent);
-    add_recent_group(&mut lines, &mut global_idx, recent_idx, "this week", &this_week, fg, dim, accent);
-    add_recent_group(&mut lines, &mut global_idx, recent_idx, "older", &older, fg, dim, accent);
+    let ctx = RecentGroupCtx { fg, dim, accent };
+    add_recent_group(
+        &mut lines,
+        &mut global_idx,
+        recent_idx,
+        "today",
+        &today,
+        &ctx,
+    );
+    add_recent_group(
+        &mut lines,
+        &mut global_idx,
+        recent_idx,
+        "yesterday",
+        &yesterday,
+        &ctx,
+    );
+    add_recent_group(
+        &mut lines,
+        &mut global_idx,
+        recent_idx,
+        "this week",
+        &this_week,
+        &ctx,
+    );
+    add_recent_group(
+        &mut lines,
+        &mut global_idx,
+        recent_idx,
+        "older",
+        &older,
+        &ctx,
+    );
 
     if lines.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("  no recent notes", Style::default().fg(dim)),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            "  no recent notes",
+            Style::default().fg(dim),
+        )]));
     }
 
     let recent_para = Paragraph::new(lines).alignment(Alignment::Center);
@@ -464,15 +497,17 @@ fn render_settings(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled("settings", Style::default().fg(dim)),
-    ]))
+    let title = Paragraph::new(Line::from(vec![Span::styled(
+        "settings",
+        Style::default().fg(dim),
+    )]))
     .alignment(Alignment::Center);
     f.render_widget(title, v_chunks[0]);
 
-    let sep = Paragraph::new(Line::from(vec![
-        Span::styled("─".repeat(area.width as usize), Style::default().fg(dim)),
-    ]));
+    let sep = Paragraph::new(Line::from(vec![Span::styled(
+        "─".repeat(area.width as usize),
+        Style::default().fg(dim),
+    )]));
     f.render_widget(sep, v_chunks[1]);
 
     // Render settings categories + current values
@@ -501,7 +536,11 @@ fn render_settings(f: &mut Frame, app: &App, area: Rect) {
             };
 
             let prefix = if is_selected {
-                if app.settings.editing { "  * " } else { "  > " }
+                if app.settings.editing {
+                    "  * "
+                } else {
+                    "  > "
+                }
             } else {
                 "    "
             };
@@ -524,9 +563,10 @@ fn render_settings(f: &mut Frame, app: &App, area: Rect) {
     let settings_para = Paragraph::new(lines);
     f.render_widget(settings_para, v_chunks[2]);
 
-    let hint = Paragraph::new(Line::from(vec![
-        Span::styled("enter edit  esc back  j/k navigate", Style::default().fg(dim)),
-    ]))
+    let hint = Paragraph::new(Line::from(vec![Span::styled(
+        "enter edit  esc back  j/k navigate",
+        Style::default().fg(dim),
+    )]))
     .alignment(Alignment::Center);
     f.render_widget(hint, v_chunks[3]);
 }
@@ -583,9 +623,10 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect) {
     ]));
     f.render_widget(query_line, v_chunks[0]);
 
-    let sep = Paragraph::new(Line::from(vec![
-        Span::styled("─".repeat(inner.width as usize), Style::default().fg(dim)),
-    ]));
+    let sep = Paragraph::new(Line::from(vec![Span::styled(
+        "─".repeat(inner.width as usize),
+        Style::default().fg(dim),
+    )]));
     f.render_widget(sep, v_chunks[1]);
 
     let cmd_lines: Vec<Line> = app
@@ -602,10 +643,7 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(dim)
             };
             let prefix = if is_selected { "  > " } else { "    " };
-            Line::from(vec![
-                Span::styled(prefix, style),
-                Span::styled(cmd, style),
-            ])
+            Line::from(vec![Span::styled(prefix, style), Span::styled(cmd, style)])
         })
         .collect();
 
@@ -626,15 +664,17 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled("help", Style::default().fg(dim)),
-    ]))
+    let title = Paragraph::new(Line::from(vec![Span::styled(
+        "help",
+        Style::default().fg(dim),
+    )]))
     .alignment(Alignment::Center);
     f.render_widget(title, v_chunks[0]);
 
-    let sep = Paragraph::new(Line::from(vec![
-        Span::styled("─".repeat(area.width as usize), Style::default().fg(dim)),
-    ]));
+    let sep = Paragraph::new(Line::from(vec![Span::styled(
+        "─".repeat(area.width as usize),
+        Style::default().fg(dim),
+    )]));
     f.render_widget(sep, v_chunks[1]);
 
     let shortcuts = vec![
@@ -680,9 +720,10 @@ fn render_recovery(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    let question = Paragraph::new(Line::from(vec![
-        Span::styled("recover previous session?", Style::default().fg(fg)),
-    ]))
+    let question = Paragraph::new(Line::from(vec![Span::styled(
+        "recover previous session?",
+        Style::default().fg(fg),
+    )]))
     .alignment(Alignment::Center);
     f.render_widget(question, v_chunks[1]);
 
@@ -697,10 +738,7 @@ fn render_recovery(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(dim)
             };
             let prefix = if is_selected { "  > " } else { "    " };
-            Line::from(vec![
-                Span::styled(prefix, style),
-                Span::styled(*opt, style),
-            ])
+            Line::from(vec![Span::styled(prefix, style), Span::styled(*opt, style)])
         })
         .collect();
 
@@ -721,15 +759,17 @@ fn render_goals(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled("writing statistics", Style::default().fg(dim)),
-    ]))
+    let title = Paragraph::new(Line::from(vec![Span::styled(
+        "writing statistics",
+        Style::default().fg(dim),
+    )]))
     .alignment(Alignment::Center);
     f.render_widget(title, v_chunks[0]);
 
-    let sep = Paragraph::new(Line::from(vec![
-        Span::styled("─".repeat(area.width as usize), Style::default().fg(dim)),
-    ]));
+    let sep = Paragraph::new(Line::from(vec![Span::styled(
+        "─".repeat(area.width as usize),
+        Style::default().fg(dim),
+    )]));
     f.render_widget(sep, v_chunks[1]);
 
     let words = app.editor.word_count();
@@ -755,31 +795,37 @@ fn render_goals(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(goals_para, v_chunks[2]);
 }
 
+struct RecentGroupCtx {
+    fg: Color,
+    dim: Color,
+    accent: Color,
+}
+
 fn add_recent_group(
     lines: &mut Vec<Line>,
     global_idx: &mut usize,
     search_idx: usize,
     label: &str,
     items: &[String],
-    fg: Color,
-    dim: Color,
-    accent: Color,
+    ctx: &RecentGroupCtx,
 ) {
     if items.is_empty() {
         return;
     }
-    lines.push(Line::from(vec![
-        Span::styled("", Style::default().fg(dim)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled(format!("  {}", label), Style::default().fg(accent)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "",
+        Style::default().fg(ctx.dim),
+    )]));
+    lines.push(Line::from(vec![Span::styled(
+        format!("  {}", label),
+        Style::default().fg(ctx.accent),
+    )]));
     for item in items.iter() {
         let is_selected = *global_idx == search_idx;
         let style = if is_selected {
-            Style::default().fg(fg)
+            Style::default().fg(ctx.fg)
         } else {
-            Style::default().fg(dim)
+            Style::default().fg(ctx.dim)
         };
         let prefix = if is_selected { "    > " } else { "      " };
         lines.push(Line::from(vec![

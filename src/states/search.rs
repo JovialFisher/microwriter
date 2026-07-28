@@ -34,7 +34,11 @@ pub fn fuzzy_match(pattern: &str, text: &str) -> i32 {
                 consecutive_bonus = 0;
             }
 
-            if i == 0 || text_chars[i - 1] == ' ' || text_chars[i - 1] == '_' || text_chars[i - 1] == '-' {
+            if i == 0
+                || text_chars[i - 1] == ' '
+                || text_chars[i - 1] == '_'
+                || text_chars[i - 1] == '-'
+            {
                 score += 50;
             }
 

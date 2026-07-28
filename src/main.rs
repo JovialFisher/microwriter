@@ -3,10 +3,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{
-    backend::CrosstermBackend,
-    Terminal,
-};
+use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{io, time::Duration};
 
 mod app;
@@ -63,10 +60,10 @@ fn run_app(
         if event::poll(tick_rate)? {
             match event::read()? {
                 Event::Key(key) => {
-                    if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
-                        if !app.handle_key(key) {
-                            break;
-                        }
+                    if (key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat)
+                        && !app.handle_key(key)
+                    {
+                        break;
                     }
                 }
                 Event::Resize(_, _) => {
