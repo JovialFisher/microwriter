@@ -28,7 +28,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo registry & build artifacts
-        uses: actions/swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-${{ matrix.os }}
 

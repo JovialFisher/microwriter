@@ -49,7 +49,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: actions/swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2
         with:
           # `matrix.label` includes the target triple (e.g. macos-x86_64 vs
           # macos-aarch64) so two jobs on the macos-latest runner don't
