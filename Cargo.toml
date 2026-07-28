@@ -1,0 +1,21 @@
+[package]
+name = "mute"
+version = "0.1.0"
+edition = "2021"
+description = "minimal user text environment — a distraction-free terminal writing tool"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+dirs = "5"
+chrono = { version = "0.4", features = ["serde"] }
+unicode-width = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
