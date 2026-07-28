@@ -3,6 +3,7 @@ name: release
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -229,13 +230,11 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: publish continuous release
+    name: publish release
     needs: build
     runs-on: ubuntu-latest
     concurrency:
-      # Serialize publishes to the 'continuous' release so a fast second push
-      # queues behind the first; without this, two near-simultaneous pushes
-      # could both reach softprops/gh-release and race on the tag.
+      # Serialize publishes so a fast second push queues behind the first.
       group: release-${{ github.ref }}
     steps:
       - uses: actions/checkout@v4
@@ -250,22 +249,51 @@ jobs:
           sha256sum */* | awk -F/ '{ printf "%s  %s\n", $1, $2 }' | sort -o checksums.txt
           cat checksums.txt
 
-      - name: Short SHA
-        id: sha
-        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Determine release type
+        id: meta
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            cat <<'EOF' > /tmp/release-body.md
+Release ${{ github.ref_name }} of mute — minimal user text environment.
 
-      - name: Create / update 'continuous' release
+### Downloads
+
+| Platform | Binary |
+|----------|--------|
+| Linux (x86_64) | `mute-linux-x86_64-*.tar.gz` |
+| macOS (x86_64) | `mute-macos-x86_64-*.tar.gz` |
+| macOS (Apple Silicon) | `mute-macos-aarch64-*.tar.gz` |
+| Windows (x86_64) | `mute-windows-x86_64-*.zip` |
+
+SHA256 checksums are provided in `checksums.txt`.
+EOF
+          else
+            SHORT="${{ github.sha }}"
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "tag=continuous" >> "$GITHUB_OUTPUT"
+            echo "name=continuous build (${SHORT:0:7})" >> "$GITHUB_OUTPUT"
+            # Heredoc is intentionally quoted ('EOF') so shell won't expand
+            # backticks or $ in the markdown. GitHub Actions ${{ }} expressions
+            # are already substituted before the script runs.
+            cat <<'EOF' > /tmp/release-body.md
+Latest build off `main` — commit `${{ github.sha }}`.
+
+These binaries reflect the current state of the repository and are
+considered a **prerelease**. Pin to a tagged release
+(e.g. \`v1.0.0\`) for stability.
+EOF
+          fi
+
+      - name: Create / update release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: continuous
-          name: 'continuous build (${{ steps.sha.outputs.short }})'
-          body: |
-            Latest build off `main` — commit `${{ github.sha }}`.
-
-            These binaries reflect the current state of the repository and are
-            considered a **prerelease**. Pin to a tagged release
-            (e.g. `v0.1.0`) for stability.
-          prerelease: true
+          body_path: /tmp/release-body.md
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          prerelease: ${{ steps.meta.outputs.is_prerelease }}
           fail_on_unmatched_files: true
           target_commitish: ${{ github.sha }}
           files: |
