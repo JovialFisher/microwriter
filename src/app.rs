@@ -762,7 +762,14 @@ impl App {
     }
 
     pub fn get_current_setting_value(&self) -> String {
-        match self.settings.categories[self.settings.category_index].as_str() {
+        self.get_setting_value_for_category(self.settings.category_index)
+    }
+
+    pub fn get_setting_value_for_category(&self, category_index: usize) -> String {
+        if category_index >= self.settings.categories.len() {
+            return String::new();
+        }
+        match self.settings.categories[category_index].as_str() {
             "appearance" => self.config.theme.clone(),
             "cursor" => self.config.cursor_style.clone(),
             "line numbers" => self.config.line_numbers.clone(),

@@ -522,10 +522,11 @@ fn render_settings(f: &mut Frame, app: &App, area: Rect) {
                 let opt_idx = if app.settings.editing && is_selected {
                     app.settings.option_index
                 } else {
-                    // Find current setting
+                    // Find current setting for this specific category
+                    let current_val = app.get_setting_value_for_category(i);
                     app.settings.options[i]
                         .iter()
-                        .position(|o| *o == app.get_current_setting_value())
+                        .position(|o| *o == current_val)
                         .unwrap_or(0)
                 };
                 format!(" · {}", app.settings.options[i][opt_idx])
@@ -551,11 +552,23 @@ fn render_settings(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(dim)
             };
 
+            // Show available options inline for the selected (non-editing) category
+            let options_hint = if is_selected
+                && !app.settings.editing
+                && i < app.settings.options.len()
+                && !app.settings.options[i].is_empty()
+            {
+                format!("  [{}]", app.settings.options[i].join(" / "))
+            } else {
+                String::new()
+            };
+
             let value_owned = value;
             Line::from(vec![
                 Span::styled(prefix, style),
                 Span::styled(cat, style),
                 Span::styled(value_owned, Style::default().fg(fg)),
+                Span::styled(options_hint, Style::default().fg(dim)),
             ])
         })
         .collect();
