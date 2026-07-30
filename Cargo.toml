@@ -1,8 +1,8 @@
 [package]
-name = "mute"
+name = "microwriter"
 version = "1.0.0"
 edition = "2021"
-description = "minimal user text environment — a distraction-free terminal writing tool"
+description = "distraction-free writing environment — a keyboard-first terminal writing tool"
 build = "build.rs"
 
 [build-dependencies]

@@ -26,7 +26,7 @@ pub struct Storage {
 
 impl Storage {
     fn storage_path() -> Option<PathBuf> {
-        dirs::data_dir().map(|p| p.join("mute").join("storage.json"))
+        dirs::data_dir().map(|p| p.join("microwriter").join("storage.json"))
     }
 
     pub fn load() -> Result<Self, String> {

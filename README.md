@@ -1,15 +1,15 @@
-# mute
+# microwriter
 
-> **minimal user text environment** — a distraction-free, keyboard-first
+> **distraction-free writing environment** — a keyboard-first
 > terminal writing tool written in Rust.
 
-`mute` is meant to feel closer to sitting in front of a typewriter than
+`microwriter` is meant to feel closer to sitting in front of a typewriter than
 using a modern text editor. It clears the screen, hides the chrome, and
 gets out of the way of writing.
 
 ## menu
 
-The startup menu is the home of `mute`; every option is one keypress away.
+The startup menu is the home of `microwriter`; every option is one keypress away.
 
 | Shortcut | Menu item    | Description |
 |----------|--------------|-------------|
@@ -25,7 +25,7 @@ You can also jump straight to **new note** (`Ctrl+N`), **open note**
 (`Ctrl+O`), and **search** (`Ctrl+F`) from anywhere. The command palette
 (`Ctrl+P`) is the catch-all launcher.
 
-Beyond the menu, `mute` has four more screens:
+Beyond the menu, `microwriter` has four more screens:
 
 - **Editor** — the writing surface; line numbers, wrap, and an optional status line.
 - **Focus mode** — the editor with every decoration stripped (`Ctrl+P` → *focus mode*).
@@ -34,8 +34,8 @@ Beyond the menu, `mute` has four more screens:
 
 ## install
 
-`mute` is a single Rust binary. Pick whichever path suits you — both
-produce the same `mute` / `mute.exe` executable.
+`microwriter` is a single Rust binary. Pick whichever path suits you — both
+produce the same `microwriter` / `microwriter.exe` executable.
 
 ### prebuilt binaries (easiest)
 
@@ -46,20 +46,20 @@ reflects the latest commit on `main` and is rebuilt on every push; pick a
 
 | Platform                | Archive                                                                         | Run it |
 |-------------------------|---------------------------------------------------------------------------------|---|
-| Linux (x86_64)          | `mute-linux-x86_64-<date>-<shortsha>.tar.gz`                                   | `tar -xzf … && ./mute-linux-x86_64-<date>-<shortsha>/mute` |
-| macOS Intel             | `mute-macos-x86_64-<date>-<shortsha>.tar.gz`                                    | `tar -xzf … && ./mute-macos-x86_64-<date>-<shortsha>/mute` |
-| macOS Apple Silicon     | `mute-macos-aarch64-<date>-<shortsha>.tar.gz`                                   | `tar -xzf … && ./mute-macos-aarch64-<date>-<shortsha>/mute` |
-| Windows (x86_64)        | `mute-windows-x86_64-<date>-<shortsha>.zip`                                     | unzip, then double-click `mute.exe` |
+| Linux (x86_64)          | `microwriter-linux-x86_64-<date>-<shortsha>.tar.gz`                                   | `tar -xzf … && ./microwriter-linux-x86_64-<date>-<shortsha>/microwriter` |
+| macOS Intel             | `microwriter-macos-x86_64-<date>-<shortsha>.tar.gz`                                    | `tar -xzf … && ./microwriter-macos-x86_64-<date>-<shortsha>/microwriter` |
+| macOS Apple Silicon     | `microwriter-macos-aarch64-<date>-<shortsha>.tar.gz`                                   | `tar -xzf … && ./microwriter-macos-aarch64-<date>-<shortsha>/microwriter` |
+| Windows (x86_64)        | `microwriter-windows-x86_64-<date>-<shortsha>.zip`                                     | unzip, then double-click `microwriter.exe` |
 
 To verify a download, fetch `checksums.txt` from the same release and run:
 
 ```bash
 # Linux / macOS
-tar -xzf mute-linux-x86_64-<date>-<shortsha>.tar.gz
+tar -xzf microwriter-linux-x86_64-<date>-<shortsha>.tar.gz
 sha256sum -c checksums.txt
 # Windows (PowerShell)
-Expand-Archive .\mute-windows-x86_64-<date>-<shortsha>.zip
-Get-FileHash .\mute-windows-x86_64-<date>-<shortsha>\mute.exe
+Expand-Archive .\microwriter-windows-x86_64-<date>-<shortsha>.zip
+Get-FileHash .\microwriter-windows-x86_64-<date>-<shortsha>\microwriter.exe
 ```
 
 Or move the unpacked binary onto your `PATH` — see [below](#putting-the-binary-on-path).
@@ -78,7 +78,7 @@ Or move the unpacked binary onto your `PATH` — see [below](#putting-the-binary
 cargo install --git <repository-url> --locked --release
 ```
 
-Builds and drops `mute` into `~/.cargo/bin/` (or
+Builds and drops `microwriter` into `~/.cargo/bin/` (or
 `%USERPROFILE%\.cargo\bin\` on Windows), which is already on `PATH` for most
 Rust installations.
 
@@ -86,11 +86,11 @@ Rust installations.
 
 ```bash
 git clone <repository-url>
-cd mute
+cd microwriter
 cargo build --release
 ```
 
-The binary lands at `target/release/mute` (`mute.exe` on Windows).
+The binary lands at `target/release/microwriter` (`microwriter.exe` on Windows).
 
 ### requirements
 
@@ -109,23 +109,23 @@ If you used `cargo install`, nothing to do. If you built from source:
 
 ```bash
 # Linux / macOS — single-user
-install -m 0755 target/release/mute ~/.local/bin/
+install -m 0755 target/release/microwriter ~/.local/bin/
 
 # Linux — system-wide
-sudo install -m 0755 target/release/mute /usr/local/bin/
+sudo install -m 0755 target/release/microwriter /usr/local/bin/
 
 # Windows (PowerShell)
-Move-Item .\target\release\mute.exe $env:USERPROFILE\.cargo\bin\
+Move-Item .\target\release\microwriter.exe $env:USERPROFILE\.cargo\bin\
 ```
 
 ### uninstalling
 
 Delete the binary and the user data directories listed under
-[configuration](#configuration). `mute` writes no files outside of those paths.
+[configuration](#configuration). `microwriter` writes no files outside of those paths.
 
 ## quick start
 
-1. Run `mute`.
+1. Run `microwriter`.
 2. Pick something from the menu with arrow keys (or `j` / `k`), or press the shortcut letter.
 3. The selected action runs immediately — no confirmation dialogs.
 4. Inside the editor: `Ctrl+S` saves, `Esc` returns to the menu, `Ctrl+Q`
@@ -221,11 +221,11 @@ Resolved with the [`dirs`](https://crates.io/crates/dirs) crate.
 
 | Platform | Settings | Storage |
 |---|---|---|
-| Linux   | `~/.config/mute/config.toml`                       | `~/.local/share/mute/storage.json` |
-| macOS   | `~/Library/Application Support/mute/config.toml`  | `~/Library/Application Support/mute/storage.json` |
-| Windows | `%APPDATA%\mute\config.toml`                       | `%APPDATA%\mute\storage.json` |
+| Linux   | `~/.config/microwriter/config.toml`                       | `~/.local/share/microwriter/storage.json` |
+| macOS   | `~/Library/Application Support/microwriter/config.toml`  | `~/Library/Application Support/microwriter/storage.json` |
+| Windows | `%APPDATA%\microwriter\config.toml`                       | `%APPDATA%\microwriter\storage.json` |
 
-If `default_folder` is empty on the first launch, `mute` falls back to your
+If `default_folder` is empty on the first launch, `microwriter` falls back to your
 platform's `Documents` directory.
 
 ### reference
@@ -237,7 +237,7 @@ platform's `Documents` directory.
 | `line_numbers`         | `"off"`      | `off` / `relative` / `absolute` |
 | `wrap`                 | `true`       | `true` / `false` |
 | `autosave`             | `"disabled"` | literal string `disabled` / `"15 sec"` / `"30 sec"` / `"1 min"` / `"5 min"` |
-| `default_folder`       | `""`         | an absolute path; falls back to `Documents` if empty (`~` is **not** expanded by `mute`) |
+| `default_folder`       | `""`         | an absolute path; falls back to `Documents` if empty (`~` is **not** expanded by `microwriter`) |
 | `timestamp_filenames`  | `false`      | `true` / `false` (when on, new notes are named `YYYY-MM-DD-HH-MM.txt`) |
 | `use_tabs`             | `false`      | `true` / `false` |
 | `tab_spaces`           | `4`          | integer — width when `use_tabs` is `false` |
@@ -262,7 +262,7 @@ near-monochrome.
 ## supported file types
 
 The browser and fuzzy search only index `.txt`, `.md`, `.rst`, and `.log`.
-Other extensions are ignored by design — `mute` is for plain text.
+Other extensions are ignored by design — `microwriter` is for plain text.
 
 ## writing workflow
 
@@ -276,7 +276,7 @@ Other extensions are ignored by design — `mute` is for plain text.
   scoring (`src/states/search.rs::fuzzy_match`) with a +10 boost for any
   file you've opened recently.
 - **Recovery** records every file you open or create. If the file still
-  exists next startup, `mute` offers to reopen it. `Esc` only hides the
+  exists next startup, `microwriter` offers to reopen it. `Esc` only hides the
   prompt for that run; pick **no** to permanently skip.
 - **Goals** (`Ctrl+P` → *goals*) shows word count, character count, and a
   rough reading-time estimate (`max(1, words / 200)` minutes). No streaks,
@@ -298,9 +298,9 @@ Set these under `Settings > Secrets and variables > Actions`:
 
 | Secret                | What it is |
 |-----------------------|---|
-| `WINDOWS_CERT_B64`    | Base64 of your Authenticode `.pfx`. Linux/GNU: `base64 -w0 mute.pfx`. macOS/BSD: `base64 -i mute.pfx | tr -d "\n"`. |
+| `WINDOWS_CERT_B64`    | Base64 of your Authenticode `.pfx`. Linux/GNU: `base64 -w0 microwriter.pfx`. macOS/BSD: `base64 -i microwriter.pfx | tr -d "\n"`. |
 | `WINDOWS_CERT_PASS`   | Password for that `.pfx`. |
-| `APPLE_CERT_B64`      | Base64 of your **Developer ID Application** `.p12`. Linux/GNU: `base64 -w0 mute.p12`. macOS/BSD: `base64 -i mute.p12 | tr -d "\n"`. Plain "Apple Development" certs do *not* sign for Gatekeeper. |
+| `APPLE_CERT_B64`      | Base64 of your **Developer ID Application** `.p12`. Linux/GNU: `base64 -w0 microwriter.p12`. macOS/BSD: `base64 -i microwriter.p12 | tr -d "\n"`. Plain "Apple Development" certs do *not* sign for Gatekeeper. |
 | `APPLE_CERT_PASS`     | Password for that `.p12`. |
 | `APPLE_ID`            | Apple ID email tied to the Developer Program enrollment. |
 | `APPLE_APP_PASS`      | **App-specific password** from appleid.apple.com — *not* your main Apple ID password. |
@@ -315,7 +315,7 @@ Set these under `Settings > Secrets and variables > Actions`:
   the CI run (Apple's queueing is variable).
 - macOS notarization is performed on the packaged `.tar.gz` archive. Gatekeeper
   verifies the ticket on first launch (online). To make offline verification
-  work after extraction, run `xcrun stapler staple /path/to/mute` manually.
+  work after extraction, run `xcrun stapler staple /path/to/microwriter` manually.
 
 ## project structure
 

@@ -1,6 +1,6 @@
 //! `build.rs`
 //!
-//! Embed `assets/mute_icon.ico` into the Windows `mute.exe` so the binary
+//! Embed `assets/microwriter_icon.ico` into the Windows `microwriter.exe` so the binary
 //! carries the custom icon visible in Explorer, the taskbar, and shortcut
 //! menus.
 //!
@@ -9,7 +9,7 @@
 //!   On macOS, icons live in a `.app` bundle (`Contents/Resources/AppIcon.icns`);
 //!   on Linux, they're registered with the icon-theme database. Neither is
 //!   in scope for this release pipeline (we ship `tar.gz` of the raw binary).
-//! - If `assets/mute_icon.ico` is absent, the build still succeeds and we
+//! - If `assets/microwriter_icon.ico` is absent, the build still succeeds and we
 //!   emit a `cargo:warning` line so the omission is loud in CI logs.
 
 fn main() {
@@ -21,13 +21,13 @@ fn main() {
         return;
     }
 
-    let icon = std::path::Path::new("assets/mute_icon.ico");
+    let icon = std::path::Path::new("assets/microwriter_icon.ico");
 
     if !icon.exists() {
         println!(
-            "cargo:warning=assets/mute_icon.ico not found; \
+            "cargo:warning=assets/microwriter_icon.ico not found; \
              the Windows binary will ship without an embedded icon. \
-             Drop a .ico file at assets/mute_icon.ico to enable it."
+             Drop a .ico file at assets/microwriter_icon.ico to enable it."
         );
         return;
     }
@@ -35,13 +35,13 @@ fn main() {
     let mut res = winresource::WindowsResource::new();
     res.set_icon(
         icon.to_str()
-            .expect("assets/mute_icon.ico path is not valid UTF-8"),
+            .expect("assets/microwriter_icon.ico path is not valid UTF-8"),
     );
     // Version metadata — visible in Explorer's "Properties → Details".
-    res.set("ProductName", "mute");
-    res.set("FileDescription", "minimal user text environment");
-    res.set("OriginalFilename", "mute.exe");
-    res.set("InternalName", "mute");
+    res.set("ProductName", "microwriter");
+    res.set("FileDescription", "distraction-free writing environment");
+    res.set("OriginalFilename", "microwriter.exe");
+    res.set("InternalName", "microwriter");
 
     if let Err(e) = res.compile() {
         // Be loud: resource-compile failures usually mean the .ico is

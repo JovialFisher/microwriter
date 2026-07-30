@@ -52,7 +52,7 @@ fn render_startup(f: &mut Frame, app: &App, area: Rect) {
 
     // Title
     let title = Paragraph::new(Line::from(vec![Span::styled(
-        "mute",
+        "microwriter",
         Style::default().fg(fg).add_modifier(Modifier::BOLD),
     )]))
     .alignment(Alignment::Center);
@@ -60,7 +60,7 @@ fn render_startup(f: &mut Frame, app: &App, area: Rect) {
 
     // Tagline
     let tagline = Paragraph::new(Line::from(vec![Span::styled(
-        "minimal user text environment",
+        "distraction-free writing environment",
         Style::default().fg(dim),
     )]))
     .alignment(Alignment::Center);

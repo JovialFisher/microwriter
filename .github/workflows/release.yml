@@ -27,22 +27,22 @@ jobs:
             label: linux-x86_64
             target: x86_64-unknown-linux-gnu
             archive: tar
-            binary: mute
+            binary: microwriter
           - os: macos-latest
             label: macos-x86_64
             target: x86_64-apple-darwin
             archive: tar
-            binary: mute
+            binary: microwriter
           - os: macos-latest
             label: macos-aarch64
             target: aarch64-apple-darwin
             archive: tar
-            binary: mute
+            binary: microwriter
           - os: windows-latest
             label: windows-x86_64
             target: x86_64-pc-windows-msvc
             archive: zip
-            binary: mute.exe
+            binary: microwriter.exe
     steps:
       - uses: actions/checkout@v4
 
@@ -71,7 +71,7 @@ jobs:
       - name: Warn when Windows signing is not configured
         if: matrix.os == 'windows-latest' && env.WINDOWS_CERT_B64 == ''
         run: |
-          echo "::warning::Windows signing secrets are not set — published mute.exe will be unsigned. SmartScreen warnings expected."
+          echo "::warning::Windows signing secrets are not set — published microwriter.exe will be unsigned. SmartScreen warnings expected."
 
       - name: Sign Windows binary
         if: matrix.os == 'windows-latest' && env.WINDOWS_CERT_B64 != ''
@@ -81,7 +81,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $pfx = Join-Path $env:RUNNER_TEMP 'mute.pfx'
+          $pfx = Join-Path $env:RUNNER_TEMP 'microwriter.pfx'
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_B64))
 
           # signtool.exe is part of the Windows 10 SDK shipped with windows-latest.
@@ -101,7 +101,7 @@ jobs:
             /fd SHA256 `
             /tr http://timestamp.digicert.com `
             /td SHA256 `
-            /d "mute" `
+            /d "microwriter" `
             /du "https://github.com/${{ github.repository }}" `
             "target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
@@ -117,7 +117,7 @@ jobs:
       - name: Warn when macOS signing is not configured
         if: startsWith(matrix.os, 'macos') && env.APPLE_CERT_B64 == ''
         run: |
-          echo "::warning::Apple signing secrets are not set — published mute binary will be un-signed. Gatekeeper will block it on first launch."
+          echo "::warning::Apple signing secrets are not set — published microwriter binary will be un-signed. Gatekeeper will block it on first launch."
 
       - name: Sign macOS binary
         if: startsWith(matrix.os, 'macos') && env.APPLE_CERT_B64 != ''
@@ -127,8 +127,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          CERT_PATH="$RUNNER_TEMP/mute-apple.p12"
-          KEYCHAIN="$RUNNER_TEMP/mute-sig.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/microwriter-apple.p12"
+          KEYCHAIN="$RUNNER_TEMP/microwriter-sig.keychain-db"
           echo "$APPLE_CERT_B64" | base64 --decode > "$CERT_PATH"
 
           security create-keychain -p "" "$KEYCHAIN"
@@ -173,7 +173,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          NAME="mute-${{ matrix.label }}-${VERSION}"
+          NAME="microwriter-${{ matrix.label }}-${VERSION}"
           mkdir -p "dist/$NAME"
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/$NAME/"
           if [ "${{ matrix.os }}" != "windows-latest" ]; then
@@ -257,16 +257,16 @@ jobs:
             echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
             echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
             cat <<'EOF' > /tmp/release-body.md
-Release ${{ github.ref_name }} of mute — minimal user text environment.
+Release ${{ github.ref_name }} of microwriter — distraction-free writing environment.
 
 ### Downloads
 
 | Platform | Binary |
 |----------|--------|
-| Linux (x86_64) | `mute-linux-x86_64-*.tar.gz` |
-| macOS (x86_64) | `mute-macos-x86_64-*.tar.gz` |
-| macOS (Apple Silicon) | `mute-macos-aarch64-*.tar.gz` |
-| Windows (x86_64) | `mute-windows-x86_64-*.zip` |
+| Linux (x86_64) | `microwriter-linux-x86_64-*.tar.gz` |
+| macOS (x86_64) | `microwriter-macos-x86_64-*.tar.gz` |
+| macOS (Apple Silicon) | `microwriter-macos-aarch64-*.tar.gz` |
+| Windows (x86_64) | `microwriter-windows-x86_64-*.zip` |
 
 SHA256 checksums are provided in `checksums.txt`.
 EOF

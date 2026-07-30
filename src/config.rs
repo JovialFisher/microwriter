@@ -37,7 +37,7 @@ impl Default for Config {
 
 impl Config {
     fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|p| p.join("mute").join("config.toml"))
+        dirs::config_dir().map(|p| p.join("microwriter").join("config.toml"))
     }
 
     pub fn load() -> Result<Self, String> {

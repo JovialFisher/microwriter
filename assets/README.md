@@ -1,18 +1,18 @@
 # `assets/`
 
-This directory holds `mute_icon.ico` — the icon that gets embedded into the
-Windows `mute.exe` binary by `build.rs` (via the `winresource` crate).
+This directory holds `microwriter_icon.ico` — the icon that gets embedded into the
+Windows `microwriter.exe` binary by `build.rs` (via the `winresource` crate).
 
 ## how to use it
 
 1. Drop a Windows-compatible `.ico` file at this exact path:
    ```
-   assets/mute_icon.ico
+   assets/microwriter_icon.ico
    ```
 2. The next Windows build (locally or via the `release.yml` workflow) will
-   embed it into `mute.exe`. It shows up in:
+   embed it into `microwriter.exe`. It shows up in:
    - File Explorer's icon view
-   - The Windows taskbar while `mute` runs
+   - The Windows taskbar while `microwriter` runs
    - Start-menu shortcuts
    - Alt+Tab thumbnails
 
