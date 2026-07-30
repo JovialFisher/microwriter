@@ -256,35 +256,32 @@ jobs:
             echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
             echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
             echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-            cat <<'EOF' > /tmp/release-body.md
-Release ${{ github.ref_name }} of microwriter — distraction-free writing environment.
-
-### Downloads
-
-| Platform | Binary |
-|----------|--------|
-| Linux (x86_64) | `microwriter-linux-x86_64-*.tar.gz` |
-| macOS (x86_64) | `microwriter-macos-x86_64-*.tar.gz` |
-| macOS (Apple Silicon) | `microwriter-macos-aarch64-*.tar.gz` |
-| Windows (x86_64) | `microwriter-windows-x86_64-*.zip` |
-
-SHA256 checksums are provided in `checksums.txt`.
-EOF
+            {
+              echo "Release ${{ github.ref_name }} of microwriter - distraction-free writing environment."
+              echo
+              echo "### Downloads"
+              echo
+              echo "| Platform | Binary |"
+              echo "|----------|--------|"
+              echo "| Linux (x86_64) | \`microwriter-linux-x86_64-*.tar.gz\` |"
+              echo "| macOS (x86_64) | \`microwriter-macos-x86_64-*.tar.gz\` |"
+              echo "| macOS (Apple Silicon) | \`microwriter-macos-aarch64-*.tar.gz\` |"
+              echo "| Windows (x86_64) | \`microwriter-windows-x86_64-*.zip\` |"
+              echo
+              echo "SHA256 checksums are provided in \`checksums.txt\`."
+            } > /tmp/release-body.md
           else
             SHORT="${{ github.sha }}"
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
             echo "tag=continuous" >> "$GITHUB_OUTPUT"
             echo "name=continuous build (${SHORT:0:7})" >> "$GITHUB_OUTPUT"
-            # Heredoc is intentionally quoted ('EOF') so shell won't expand
-            # backticks or $ in the markdown. GitHub Actions ${{ }} expressions
-            # are already substituted before the script runs.
-            cat <<'EOF' > /tmp/release-body.md
-Latest build off `main` — commit `${{ github.sha }}`.
-
-These binaries reflect the current state of the repository and are
-considered a **prerelease**. Pin to a tagged release
-(e.g. \`v1.0.0\`) for stability.
-EOF
+            {
+              echo "Latest build off \`main\` - commit \`${{ github.sha }}\`."
+              echo
+              echo "These binaries reflect the current state of the repository and are"
+              echo "considered a **prerelease**. Pin to a tagged release"
+              echo "(e.g. \\\`v1.0.0\\\`) for stability."
+            } > /tmp/release-body.md
           fi
 
       - name: Create / update release
