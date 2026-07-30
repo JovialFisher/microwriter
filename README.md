@@ -1,7 +1,4 @@
-# microwriter
-
-> **distraction-free writing environment** — a keyboard-first
-> terminal writing tool written in Rust.
+<img src="https://iili.io/C8z6gG2.png" width="1000">
 
 `microwriter` is meant to feel closer to sitting in front of a typewriter than
 using a modern text editor. It clears the screen, hides the chrome, and
