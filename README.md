@@ -89,6 +89,22 @@ cargo build --release
 
 The binary lands at `target/release/microwriter` (`microwriter.exe` on Windows).
 
+### double-click launchers
+
+After cloning or building the project, use the launcher for your platform from the repository root:
+
+| Platform | Launcher |
+|---|---|
+| Windows | `launch_microwriter.bat` |
+| macOS | `launch_microwriter.command` |
+| Linux / other Unix systems | `launch_microwriter.sh` |
+
+The launchers use an existing release or debug binary when available, otherwise they build and run the release binary with Cargo. On macOS/Linux, make the Unix launcher executable once if your file manager does not run it directly:
+
+```bash
+chmod +x launch_microwriter.sh launch_microwriter.command
+```
+
 ### requirements
 
 - **Rust 1.70 or newer** (the `[package]` declares `edition = "2021"`).

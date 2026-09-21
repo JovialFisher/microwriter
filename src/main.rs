@@ -23,15 +23,32 @@ fn main() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Initialize application
+    // Initialize application and run the event loop. Keep the result until
+    // terminal cleanup has completed so an initialization or runtime error
+    // cannot leave the user's terminal in raw/alternate-screen mode.
     let mut app = App::new();
-    app.init()?;
-
-    // Main event loop
     let tick_rate = Duration::from_millis(16); // ~60fps
-    let res = run_app(&mut terminal, &mut app, tick_rate);
+    let res = app
+        .init()
+        .and_then(|_| run_app(&mut terminal, &mut app, tick_rate));
 
-    // Restore terminal
+    // Always restore the terminal before returning an application error.
+    let cleanup_result = restore_terminal(&mut terminal);
+
+    cleanup_result?;
+
+    // Save state after terminal cleanup so a storage failure cannot strand
+    // the user's terminal in raw/alternate-screen mode.
+    if let Err(err) = res {
+        eprintln!("Error: {err:?}");
+        let _ = app.save_state();
+        return Err(err);
+    }
+    app.save_state()?;
+    Ok(())
+}
+
+fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -39,13 +56,6 @@ fn main() -> io::Result<()> {
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
-
-    // Save state on exit
-    app.save_state()?;
-
-    if let Err(err) = res {
-        eprintln!("Error: {err:?}");
-    }
     Ok(())
 }
 

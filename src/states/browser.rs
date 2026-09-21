@@ -50,6 +50,14 @@ impl BrowserState {
                 self.search.pop();
                 BrowserAction::FilterChanged
             }
+            KeyCode::Tab => {
+                if !self.items.is_empty() {
+                    self.search = self.items[0].clone();
+                    BrowserAction::FilterChanged
+                } else {
+                    BrowserAction::None
+                }
+            }
             KeyCode::Char(c) => {
                 self.search.push(c);
                 BrowserAction::FilterChanged

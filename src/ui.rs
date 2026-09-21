@@ -7,6 +7,9 @@ use ratatui::{
     Frame,
 };
 
+/// Version codename for the current release.
+pub const VERSION_CODENAME: &str = "v1.0.0 \"White Mesa\"";
+
 pub fn render(f: &mut Frame, app: &App) {
     let bg = app.get_theme_bg();
     let fg = app.get_theme_fg();
@@ -37,7 +40,7 @@ fn render_startup(f: &mut Frame, app: &App, area: Rect) {
     let fg = app.get_theme_fg();
     let accent = app.get_accent_color();
 
-    // Center vertically
+    // Center vertically, reserving bottom rows for the version codename
     let v_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -46,7 +49,9 @@ fn render_startup(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(1),                           // tagline
             Constraint::Length(1),                           // spacing
             Constraint::Length(app.menu.items.len() as u16), // menu
-            Constraint::Fill(1),
+            Constraint::Fill(1),                             // padding above version
+            Constraint::Length(1),                           // gap
+            Constraint::Length(1),                           // version codename
         ])
         .split(area);
 
@@ -89,6 +94,14 @@ fn render_startup(f: &mut Frame, app: &App, area: Rect) {
 
     let menu = Paragraph::new(menu_lines).alignment(Alignment::Center);
     f.render_widget(menu, v_chunks[4]);
+
+    // Version codename near the bottom with a one-line gap
+    let version = Paragraph::new(Line::from(vec![Span::styled(
+        VERSION_CODENAME,
+        Style::default().fg(dim),
+    )]))
+    .alignment(Alignment::Center);
+    f.render_widget(version, v_chunks[7]);
 }
 
 fn render_editor(f: &mut Frame, app: &App, area: Rect) {
@@ -155,6 +168,19 @@ fn render_editor(f: &mut Frame, app: &App, area: Rect) {
                     cursor_char,
                     Style::default().fg(fg).bg(Color::DarkGray),
                 ));
+                // Render ghost suggestion in dim gray after the cursor
+                // Show when cursor is at a word boundary (next char is non-word or end of line)
+                let at_word_boundary = after.is_empty()
+                    || after
+                        .chars()
+                        .next()
+                        .is_some_and(|c| !c.is_alphanumeric() && c != '_');
+                if at_word_boundary && !app.editor.ghost_suggestion.is_empty() {
+                    spans.push(Span::styled(
+                        &app.editor.ghost_suggestion,
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
                 spans.push(Span::styled(after, Style::default().fg(fg)));
                 Line::from(spans)
             } else {
@@ -226,11 +252,18 @@ fn render_focus(f: &mut Frame, app: &App, area: Rect) {
                 let at: String = line.chars().skip(col).take(1).collect();
                 let after: String = line.chars().skip(col + 1).collect();
                 let cursor_char = if at.is_empty() { " ".to_string() } else { at };
-                Line::from(vec![
+                let mut spans = vec![
                     Span::styled(before, Style::default().fg(fg)),
                     Span::styled(cursor_char, Style::default().fg(fg).bg(Color::DarkGray)),
-                    Span::styled(after, Style::default().fg(fg)),
-                ])
+                ];
+                if after.is_empty() && !app.editor.ghost_suggestion.is_empty() {
+                    spans.push(Span::styled(
+                        &app.editor.ghost_suggestion,
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+                spans.push(Span::styled(after, Style::default().fg(fg)));
+                Line::from(spans)
             } else {
                 Line::from(Span::styled(line, Style::default().fg(fg)))
             }
@@ -306,7 +339,7 @@ fn render_file_browser(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(search_line, v_chunks[3]);
     } else {
         let hint = Paragraph::new(Line::from(vec![Span::styled(
-            "/ search  h home  enter open  esc back",
+            "/ search  tab complete  h home  enter open  esc back",
             Style::default().fg(dim),
         )]));
         f.render_widget(hint, v_chunks[3]);
@@ -321,10 +354,12 @@ fn render_search(f: &mut Frame, app: &App, area: Rect) {
     let v_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Fill(1),
             Constraint::Length(1), // label
             Constraint::Length(1), // query
-            Constraint::Length(1), // separator
-            Constraint::Fill(1),
+            Constraint::Fill(1),   // results
+            Constraint::Length(1), // gap
+            Constraint::Length(1), // version
         ])
         .split(area);
 
@@ -333,7 +368,7 @@ fn render_search(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(dim),
     )]))
     .alignment(Alignment::Center);
-    f.render_widget(label, v_chunks[0]);
+    f.render_widget(label, v_chunks[1]);
 
     let query_line = Paragraph::new(Line::from(vec![
         Span::styled("> ", Style::default().fg(accent)),
@@ -341,7 +376,7 @@ fn render_search(f: &mut Frame, app: &App, area: Rect) {
         Span::styled("█", Style::default().fg(fg)),
     ]))
     .alignment(Alignment::Center);
-    f.render_widget(query_line, v_chunks[1]);
+    f.render_widget(query_line, v_chunks[2]);
 
     let results: Vec<Line> = app
         .search
@@ -356,7 +391,7 @@ fn render_search(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(dim)
             };
-            let prefix = if is_selected { "  > " } else { "    " };
+            let prefix = if is_selected { "> " } else { "  " };
             let display = result.split('|').next().unwrap_or(result);
             Line::from(vec![
                 Span::styled(prefix, style),
@@ -367,7 +402,7 @@ fn render_search(f: &mut Frame, app: &App, area: Rect) {
 
     if results.is_empty() && !app.search.query.is_empty() {
         let empty = Paragraph::new(Line::from(vec![Span::styled(
-            "  no results",
+            "no results",
             Style::default().fg(dim),
         )]))
         .alignment(Alignment::Center);
@@ -376,6 +411,14 @@ fn render_search(f: &mut Frame, app: &App, area: Rect) {
         let results_para = Paragraph::new(results).alignment(Alignment::Center);
         f.render_widget(results_para, v_chunks[3]);
     }
+
+    // Version codename
+    let version = Paragraph::new(Line::from(vec![Span::styled(
+        VERSION_CODENAME,
+        Style::default().fg(dim),
+    )]))
+    .alignment(Alignment::Center);
+    f.render_widget(version, v_chunks[5]);
 }
 
 fn render_recent(f: &mut Frame, app: &App, area: Rect) {
@@ -386,9 +429,12 @@ fn render_recent(f: &mut Frame, app: &App, area: Rect) {
     let v_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Fill(1),   // top padding
             Constraint::Length(1), // title
             Constraint::Length(1), // separator
-            Constraint::Fill(1),
+            Constraint::Fill(1),   // list
+            Constraint::Length(1), // gap
+            Constraint::Length(1), // version
         ])
         .split(area);
 
@@ -397,14 +443,14 @@ fn render_recent(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(dim),
     )]))
     .alignment(Alignment::Center);
-    f.render_widget(title, v_chunks[0]);
+    f.render_widget(title, v_chunks[1]);
 
     let sep = Paragraph::new(Line::from(vec![Span::styled(
         "─".repeat(area.width as usize),
         Style::default().fg(dim),
     )]))
     .alignment(Alignment::Center);
-    f.render_widget(sep, v_chunks[1]);
+    f.render_widget(sep, v_chunks[2]);
 
     // Group by time period
     let now = chrono::Utc::now();
@@ -473,13 +519,21 @@ fn render_recent(f: &mut Frame, app: &App, area: Rect) {
 
     if lines.is_empty() {
         lines.push(Line::from(vec![Span::styled(
-            "  no recent notes",
+            "no recent notes",
             Style::default().fg(dim),
         )]));
     }
 
     let recent_para = Paragraph::new(lines).alignment(Alignment::Center);
-    f.render_widget(recent_para, v_chunks[2]);
+    f.render_widget(recent_para, v_chunks[3]);
+
+    // Version codename
+    let version = Paragraph::new(Line::from(vec![Span::styled(
+        VERSION_CODENAME,
+        Style::default().fg(dim),
+    )]))
+    .alignment(Alignment::Center);
+    f.render_widget(version, v_chunks[5]);
 }
 
 fn render_settings(f: &mut Frame, app: &App, area: Rect) {
@@ -490,10 +544,13 @@ fn render_settings(f: &mut Frame, app: &App, area: Rect) {
     let v_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Fill(1),   // top padding
             Constraint::Length(1), // title
             Constraint::Length(1), // separator
-            Constraint::Fill(1),
+            Constraint::Fill(1),   // settings
             Constraint::Length(1), // hint
+            Constraint::Length(1), // gap
+            Constraint::Length(1), // version
         ])
         .split(area);
 
@@ -502,13 +559,13 @@ fn render_settings(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(dim),
     )]))
     .alignment(Alignment::Center);
-    f.render_widget(title, v_chunks[0]);
+    f.render_widget(title, v_chunks[1]);
 
     let sep = Paragraph::new(Line::from(vec![Span::styled(
         "─".repeat(area.width as usize),
         Style::default().fg(dim),
     )]));
-    f.render_widget(sep, v_chunks[1]);
+    f.render_widget(sep, v_chunks[2]);
 
     // Render settings categories + current values
     let lines: Vec<Line> = app
@@ -538,12 +595,12 @@ fn render_settings(f: &mut Frame, app: &App, area: Rect) {
 
             let prefix = if is_selected {
                 if app.settings.editing {
-                    "  * "
+                    "* "
                 } else {
-                    "  > "
+                    "> "
                 }
             } else {
-                "    "
+                "  "
             };
 
             let style = if is_selected {
@@ -574,14 +631,22 @@ fn render_settings(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let settings_para = Paragraph::new(lines);
-    f.render_widget(settings_para, v_chunks[2]);
+    f.render_widget(settings_para, v_chunks[3]);
 
     let hint = Paragraph::new(Line::from(vec![Span::styled(
-        "enter edit  esc back  j/k navigate",
+        "enter edit  tab complete  esc back  j/k navigate",
         Style::default().fg(dim),
     )]))
     .alignment(Alignment::Center);
-    f.render_widget(hint, v_chunks[3]);
+    f.render_widget(hint, v_chunks[4]);
+
+    // Version codename
+    let version = Paragraph::new(Line::from(vec![Span::styled(
+        VERSION_CODENAME,
+        Style::default().fg(dim),
+    )]))
+    .alignment(Alignment::Center);
+    f.render_widget(version, v_chunks[6]);
 }
 
 fn render_command_palette(f: &mut Frame, app: &App, area: Rect) {
@@ -655,7 +720,7 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(dim)
             };
-            let prefix = if is_selected { "  > " } else { "    " };
+            let prefix = if is_selected { "> " } else { "  " };
             Line::from(vec![Span::styled(prefix, style), Span::styled(cmd, style)])
         })
         .collect();
@@ -671,9 +736,12 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
     let v_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Fill(1),   // top padding
             Constraint::Length(1), // title
             Constraint::Length(1), // separator
-            Constraint::Fill(1),
+            Constraint::Fill(1),   // shortcuts
+            Constraint::Length(1), // gap
+            Constraint::Length(1), // version
         ])
         .split(area);
 
@@ -682,13 +750,13 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(dim),
     )]))
     .alignment(Alignment::Center);
-    f.render_widget(title, v_chunks[0]);
+    f.render_widget(title, v_chunks[1]);
 
     let sep = Paragraph::new(Line::from(vec![Span::styled(
         "─".repeat(area.width as usize),
         Style::default().fg(dim),
     )]));
-    f.render_widget(sep, v_chunks[1]);
+    f.render_widget(sep, v_chunks[2]);
 
     let shortcuts = vec![
         ("ctrl+s", "save"),
@@ -707,14 +775,22 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|(key, desc)| {
             Line::from(vec![
-                Span::styled(format!("  {:>18}    ", key), Style::default().fg(accent)),
+                Span::styled(format!("{:>18}    ", key), Style::default().fg(accent)),
                 Span::styled(*desc, Style::default().fg(dim)),
             ])
         })
         .collect();
 
     let help_para = Paragraph::new(lines).alignment(Alignment::Center);
-    f.render_widget(help_para, v_chunks[2]);
+    f.render_widget(help_para, v_chunks[3]);
+
+    // Version codename
+    let version = Paragraph::new(Line::from(vec![Span::styled(
+        VERSION_CODENAME,
+        Style::default().fg(dim),
+    )]))
+    .alignment(Alignment::Center);
+    f.render_widget(version, v_chunks[5]);
 }
 
 fn render_recovery(f: &mut Frame, app: &App, area: Rect) {
@@ -750,7 +826,7 @@ fn render_recovery(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(dim)
             };
-            let prefix = if is_selected { "  > " } else { "    " };
+            let prefix = if is_selected { "> " } else { "  " };
             Line::from(vec![Span::styled(prefix, style), Span::styled(*opt, style)])
         })
         .collect();
@@ -766,9 +842,12 @@ fn render_goals(f: &mut Frame, app: &App, area: Rect) {
     let v_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Fill(1),   // top padding
             Constraint::Length(1), // title
             Constraint::Length(1), // separator
-            Constraint::Fill(1),
+            Constraint::Fill(1),   // stats
+            Constraint::Length(1), // gap
+            Constraint::Length(1), // version
         ])
         .split(area);
 
@@ -777,13 +856,13 @@ fn render_goals(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(dim),
     )]))
     .alignment(Alignment::Center);
-    f.render_widget(title, v_chunks[0]);
+    f.render_widget(title, v_chunks[1]);
 
     let sep = Paragraph::new(Line::from(vec![Span::styled(
         "─".repeat(area.width as usize),
         Style::default().fg(dim),
     )]));
-    f.render_widget(sep, v_chunks[1]);
+    f.render_widget(sep, v_chunks[2]);
 
     let words = app.editor.word_count();
     let chars = app.editor.char_count();
@@ -791,21 +870,29 @@ fn render_goals(f: &mut Frame, app: &App, area: Rect) {
 
     let stats_lines = vec![
         Line::from(vec![
-            Span::styled("  word count        ", Style::default().fg(dim)),
+            Span::styled("word count        ", Style::default().fg(dim)),
             Span::styled(format!("{}", words), Style::default().fg(fg)),
         ]),
         Line::from(vec![
-            Span::styled("  character count   ", Style::default().fg(dim)),
+            Span::styled("character count   ", Style::default().fg(dim)),
             Span::styled(format!("{}", chars), Style::default().fg(fg)),
         ]),
         Line::from(vec![
-            Span::styled("  reading time      ", Style::default().fg(dim)),
+            Span::styled("reading time      ", Style::default().fg(dim)),
             Span::styled(format!("{} min", reading_time), Style::default().fg(fg)),
         ]),
     ];
 
     let goals_para = Paragraph::new(stats_lines).alignment(Alignment::Center);
-    f.render_widget(goals_para, v_chunks[2]);
+    f.render_widget(goals_para, v_chunks[3]);
+
+    // Version codename
+    let version = Paragraph::new(Line::from(vec![Span::styled(
+        VERSION_CODENAME,
+        Style::default().fg(dim),
+    )]))
+    .alignment(Alignment::Center);
+    f.render_widget(version, v_chunks[5]);
 }
 
 struct RecentGroupCtx {
@@ -830,7 +917,7 @@ fn add_recent_group(
         Style::default().fg(ctx.dim),
     )]));
     lines.push(Line::from(vec![Span::styled(
-        format!("  {}", label),
+        label.to_string(),
         Style::default().fg(ctx.accent),
     )]));
     for item in items.iter() {
@@ -840,7 +927,7 @@ fn add_recent_group(
         } else {
             Style::default().fg(ctx.dim)
         };
-        let prefix = if is_selected { "    > " } else { "      " };
+        let prefix = if is_selected { "> " } else { "  " };
         lines.push(Line::from(vec![
             Span::styled(prefix, style),
             Span::styled(item.clone(), style),

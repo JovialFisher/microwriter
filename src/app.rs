@@ -191,36 +191,68 @@ impl App {
     fn dispatch_editor(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Esc => {
+                self.editor.ghost_suggestion.clear();
+                self.editor.autocomplete_matches.clear();
+                self.editor.autocomplete_prefix.clear();
                 self.mode = Mode::Startup;
                 self.menu.index = 0;
             }
+            KeyCode::Char(' ') if key.modifiers == KeyModifiers::CONTROL => {
+                if self.editor.try_autocomplete() {
+                    let total = self.editor.autocomplete_matches.len();
+                    let current = self.editor.autocomplete_index + 1;
+                    self.show_status(&format!("match {}/{}", current, total));
+                } else {
+                    self.show_status("no match");
+                }
+                self.editor.refresh_ghost();
+            }
             KeyCode::Char(c) => {
                 if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT {
+                    self.editor.autocomplete_matches.clear();
+                    self.editor.autocomplete_prefix.clear();
                     self.editor.insert_char(c);
+                    self.editor.refresh_ghost();
                     self.clear_status();
                 }
             }
             KeyCode::Enter => {
-                self.editor.insert_newline();
-                self.clear_status();
+                if self.editor.accept_ghost() {
+                    self.clear_status();
+                } else {
+                    self.editor.insert_newline();
+                    self.editor.refresh_ghost();
+                    self.clear_status();
+                }
             }
             KeyCode::Backspace => {
                 self.editor.backspace();
+                self.editor.refresh_ghost();
                 self.clear_status();
             }
             KeyCode::Delete => {
                 self.editor.delete_forward();
+                self.editor.refresh_ghost();
                 self.clear_status();
             }
             KeyCode::Tab => {
-                if self.config.use_tabs {
+                // Accept ghost suggestion if present, else try autocomplete, else indent
+                if self.editor.accept_ghost() {
+                    self.clear_status();
+                } else if self.editor.try_autocomplete() {
+                    let total = self.editor.autocomplete_matches.len();
+                    let current = self.editor.autocomplete_index + 1;
+                    self.show_status(&format!("match {}/{}", current, total));
+                    self.editor.refresh_ghost();
+                } else if self.config.use_tabs {
                     self.editor.insert_char('\t');
+                    self.clear_status();
                 } else {
                     for _ in 0..self.config.tab_spaces {
                         self.editor.insert_char(' ');
                     }
+                    self.clear_status();
                 }
-                self.clear_status();
             }
             KeyCode::Left => {
                 if key.modifiers == KeyModifiers::CONTROL {
@@ -228,12 +260,17 @@ impl App {
                 } else {
                     self.editor.move_left();
                 }
+                self.editor.refresh_ghost();
             }
             KeyCode::Right => {
                 if key.modifiers == KeyModifiers::CONTROL {
                     self.editor.move_word_right();
+                    self.editor.refresh_ghost();
+                } else if self.editor.accept_ghost() {
+                    // Ghost accepted — no further action
                 } else {
                     self.editor.move_right();
+                    self.editor.refresh_ghost();
                 }
             }
             KeyCode::Up => {
@@ -242,6 +279,7 @@ impl App {
                 } else {
                     self.editor.move_up();
                 }
+                self.editor.refresh_ghost();
             }
             KeyCode::Down => {
                 if key.modifiers == KeyModifiers::CONTROL {
@@ -249,6 +287,7 @@ impl App {
                 } else {
                     self.editor.move_down();
                 }
+                self.editor.refresh_ghost();
             }
             KeyCode::Home => {
                 if key.modifiers == KeyModifiers::CONTROL {
@@ -256,6 +295,7 @@ impl App {
                 } else {
                     self.editor.move_line_start();
                 }
+                self.editor.refresh_ghost();
             }
             KeyCode::End => {
                 if key.modifiers == KeyModifiers::CONTROL {
@@ -263,9 +303,16 @@ impl App {
                 } else {
                     self.editor.move_line_end();
                 }
+                self.editor.refresh_ghost();
             }
-            KeyCode::PageUp => self.editor.page_up(),
-            KeyCode::PageDown => self.editor.page_down(),
+            KeyCode::PageUp => {
+                self.editor.page_up();
+                self.editor.refresh_ghost();
+            }
+            KeyCode::PageDown => {
+                self.editor.page_down();
+                self.editor.refresh_ghost();
+            }
             _ => {}
         }
         true
@@ -325,6 +372,14 @@ impl App {
             SearchAction::UpdateQuery => {
                 self.update_search_results();
             }
+            SearchAction::Autocomplete => {
+                if let Some(first) = self.search.results.first() {
+                    let display = first.split('|').next().unwrap_or(first);
+                    self.search.query = display.to_string();
+                    self.search.index = 0;
+                    self.update_search_results();
+                }
+            }
             _ => {}
         }
         true
@@ -379,6 +434,12 @@ impl App {
             PaletteAction::Confirm => {
                 if let Some(cmd) = self.palette.selected_command().map(|s| s.to_string()) {
                     self.execute_palette_command(&cmd);
+                }
+            }
+            PaletteAction::Autocomplete => {
+                if let Some(first) = self.palette.items.first() {
+                    self.palette.query = first.clone();
+                    self.palette.filter();
                 }
             }
             _ => {}
@@ -681,6 +742,7 @@ impl App {
                 self.editor.file_path = Some(path.to_string());
                 self.editor.set_content(&content);
                 self.editor.modified = false;
+                self.load_cross_file_words(path);
                 self.storage.track_file(path);
                 self.storage.last_session_file = Some(path.to_string());
                 self.mode = Mode::Editor;
@@ -693,6 +755,25 @@ impl App {
                 self.mode = Mode::Editor;
             }
         }
+    }
+
+    fn load_cross_file_words(&mut self, current_path: &str) {
+        use std::collections::BTreeSet;
+        let mut words: BTreeSet<String> = BTreeSet::new();
+        for entry in self.storage.recent_files.iter().take(10) {
+            if entry.path == current_path {
+                continue;
+            }
+            if let Ok(content) = std::fs::read_to_string(&entry.path) {
+                for word in content.split_whitespace() {
+                    let cleaned = crate::editor::clean_word(word);
+                    if cleaned.len() >= 2 {
+                        words.insert(cleaned.to_string());
+                    }
+                }
+            }
+        }
+        self.editor.cross_file_words = words.into_iter().collect();
     }
 
     pub fn save_current_file(&mut self) {

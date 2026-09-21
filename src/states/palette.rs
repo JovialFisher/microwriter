@@ -3,6 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 pub enum PaletteAction {
     Cancel,
     Confirm,
+    Autocomplete,
     None,
 }
 
@@ -54,6 +55,13 @@ impl PaletteState {
                     self.index += 1;
                 }
                 PaletteAction::None
+            }
+            KeyCode::Tab => {
+                if !self.items.is_empty() {
+                    PaletteAction::Autocomplete
+                } else {
+                    PaletteAction::None
+                }
             }
             KeyCode::Char(c) => {
                 self.query.push(c.to_ascii_lowercase());

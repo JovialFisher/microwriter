@@ -60,6 +60,7 @@ pub enum SearchAction {
     Cancel,
     Confirm,
     UpdateQuery,
+    Autocomplete,
     None,
 }
 
@@ -101,6 +102,13 @@ impl SearchState {
                     self.index += 1;
                 }
                 SearchAction::None
+            }
+            KeyCode::Tab => {
+                if !self.results.is_empty() {
+                    SearchAction::Autocomplete
+                } else {
+                    SearchAction::None
+                }
             }
             KeyCode::Char(c) => {
                 self.query.push(c);
