@@ -29,69 +29,9 @@ Beyond the menu, `microwriter` has four more screens:
 - **Recovery prompt** — appears on startup if the previous run left a file open.
 - **Goals** — word / character / reading-time statistics (`Ctrl+P` → *goals*).
 
-## install
+## launch
 
-`microwriter` is a single Rust binary. Pick whichever path suits you — both
-produce the same `microwriter` / `microwriter.exe` executable.
-
-### prebuilt binaries (easiest)
-
-Open the [Releases](../../releases) page, grab the archive that matches
-your platform, and unpack it. The `continuous build (…)` entry at the top
-reflects the latest commit on `main` and is rebuilt on every push; pick a
-`vX.Y.Z` tag entry for a frozen build.
-
-| Platform                | Archive                                                                         | Run it |
-|-------------------------|---------------------------------------------------------------------------------|---|
-| Linux (x86_64)          | `microwriter-linux-x86_64-<date>-<shortsha>.tar.gz`                                   | `tar -xzf … && ./microwriter-linux-x86_64-<date>-<shortsha>/microwriter` |
-| macOS Intel             | `microwriter-macos-x86_64-<date>-<shortsha>.tar.gz`                                    | `tar -xzf … && ./microwriter-macos-x86_64-<date>-<shortsha>/microwriter` |
-| macOS Apple Silicon     | `microwriter-macos-aarch64-<date>-<shortsha>.tar.gz`                                   | `tar -xzf … && ./microwriter-macos-aarch64-<date>-<shortsha>/microwriter` |
-| Windows (x86_64)        | `microwriter-windows-x86_64-<date>-<shortsha>.zip`                                     | unzip, then double-click `microwriter.exe` |
-
-To verify a download, fetch `checksums.txt` from the same release and run:
-
-```bash
-# Linux / macOS
-tar -xzf microwriter-linux-x86_64-<date>-<shortsha>.tar.gz
-sha256sum -c checksums.txt
-# Windows (PowerShell)
-Expand-Archive .\microwriter-windows-x86_64-<date>-<shortsha>.zip
-Get-FileHash .\microwriter-windows-x86_64-<date>-<shortsha>\microwriter.exe
-```
-
-Or move the unpacked binary onto your `PATH` — see [below](#putting-the-binary-on-path).
-
-> **SmartScreen / Gatekeeper note.** When the maintainer has wired up the
-> signing secrets (see [maintainers](#maintainers)), the Windows and macOS
-> binaries are signed *and* the macOS one is notarized — double-clicking
-> runs them without prompts. Without signing configured, Windows shows a
-> SmartScreen warning and macOS blocks the binary on first launch; either
-> upgrade to a tagged release (which the maintainer signs by hand) or build
-> from source.
-
-### quick install (from the git repo)
-
-```bash
-cargo install --git <repository-url> --locked --release
-```
-
-Builds and drops `microwriter` into `~/.cargo/bin/` (or
-`%USERPROFILE%\.cargo\bin\` on Windows), which is already on `PATH` for most
-Rust installations.
-
-### build from source
-
-```bash
-git clone <repository-url>
-cd microwriter
-cargo build --release
-```
-
-The binary lands at `target/release/microwriter` (`microwriter.exe` on Windows).
-
-### double-click launchers
-
-After cloning or building the project, use the launcher for your platform from the repository root:
+Run Microwriter from the repository root with the launcher for your platform:
 
 | Platform | Launcher |
 |---|---|
@@ -99,42 +39,29 @@ After cloning or building the project, use the launcher for your platform from t
 | macOS | `launch_microwriter.command` |
 | Linux / other Unix systems | `launch_microwriter.sh` |
 
-The launchers use an existing release or debug binary when available, otherwise they build and run the release binary with Cargo. On macOS/Linux, make the Unix launcher executable once if your file manager does not run it directly:
+On macOS and Linux, make the Unix launchers executable once if your file manager does not run them directly:
 
 ```bash
 chmod +x launch_microwriter.sh launch_microwriter.command
 ```
 
-### requirements
+The launchers handle starting the app and keep the working directory anchored to the repository root.
+
+## terminal commands
+
+If you prefer the terminal, run these commands from the repository root:
+
+```bash
+cargo run
+cargo check
+cargo test
+```
+
+## requirements
 
 - **Rust 1.70 or newer** (the `[package]` declares `edition = "2021"`).
 - A terminal that supports the alternate screen buffer; truecolor is
   optional but recommended.
-
-### putting the binary on `PATH`
-
-If you used `cargo install`, nothing to do. If you built from source:
-
-| Platform | Move it to |
-|---|---|
-| Linux / macOS | `~/.local/bin/` (XDG default) or `/usr/local/bin/` for system-wide |
-| Windows       | `%USERPROFILE%\.cargo\bin\` |
-
-```bash
-# Linux / macOS — single-user
-install -m 0755 target/release/microwriter ~/.local/bin/
-
-# Linux — system-wide
-sudo install -m 0755 target/release/microwriter /usr/local/bin/
-
-# Windows (PowerShell)
-Move-Item .\target\release\microwriter.exe $env:USERPROFILE\.cargo\bin\
-```
-
-### uninstalling
-
-Delete the binary and the user data directories listed under
-[configuration](#configuration). `microwriter` writes no files outside of those paths.
 
 ## quick start
 
@@ -295,41 +222,6 @@ Other extensions are ignored by design — `microwriter` is for plain text.
   rough reading-time estimate (`max(1, words / 200)` minutes). No streaks,
   no achievements, no network sync — deliberately so.
 
-## maintainers
-
-### code-signing and notarization
-
-The release workflow `.github/workflows/release.yml` will code-sign Windows
-binaries and codesign + notarize macOS binaries **when the relevant GitHub
-secrets are set**. If any are missing, those steps are skipped and the
-workflow emits a `::warning::` annotation; unsigned binaries still publish,
-so CI stays green from day one.
-
-#### required GitHub secrets
-
-Set these under `Settings > Secrets and variables > Actions`:
-
-| Secret                | What it is |
-|-----------------------|---|
-| `WINDOWS_CERT_B64`    | Base64 of your Authenticode `.pfx`. Linux/GNU: `base64 -w0 microwriter.pfx`. macOS/BSD: `base64 -i microwriter.pfx | tr -d "\n"`. |
-| `WINDOWS_CERT_PASS`   | Password for that `.pfx`. |
-| `APPLE_CERT_B64`      | Base64 of your **Developer ID Application** `.p12`. Linux/GNU: `base64 -w0 microwriter.p12`. macOS/BSD: `base64 -i microwriter.p12 | tr -d "\n"`. Plain "Apple Development" certs do *not* sign for Gatekeeper. |
-| `APPLE_CERT_PASS`     | Password for that `.p12`. |
-| `APPLE_ID`            | Apple ID email tied to the Developer Program enrollment. |
-| `APPLE_APP_PASS`      | **App-specific password** from appleid.apple.com — *not* your main Apple ID password. |
-| `APPLE_TEAM_ID`       | The 10-character Team ID from the Apple Developer portal. |
-
-#### honest caveats
-
-- **OV code-signing certs** don't bypass SmartScreen instantly; reputation
-  builds over weeks of downloads. **EV certs** do, but require a hardware
-  token, which is awkward in CI.
-- `xcrun notarytool submit --wait` adds **2–10 minutes** per macOS build to
-  the CI run (Apple's queueing is variable).
-- macOS notarization is performed on the packaged `.tar.gz` archive. Gatekeeper
-  verifies the ticket on first launch (online). To make offline verification
-  work after extraction, run `xcrun stapler staple /path/to/microwriter` manually.
-
 ## project structure
 
 ```
@@ -348,7 +240,5 @@ src/
     └── settings.rs
 ```
 
-Build with `cargo build`, run with `cargo run`, release with
-`cargo build --release` (lto, codegen-units = 1, strip), clean with
-`cargo clean`.
+Run `cargo run` from the repository root when you prefer terminal commands over the platform launcher.
 
