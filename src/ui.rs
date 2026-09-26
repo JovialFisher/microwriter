@@ -23,6 +23,7 @@ pub fn render(f: &mut Frame, app: &App) {
     match app.mode {
         Mode::Startup => render_startup(f, app, area),
         Mode::Editor => render_editor(f, app, area),
+        Mode::FolderSelect => render_folder_select(f, app, area),
         Mode::Focus => render_focus(f, app, area),
         Mode::FileBrowser => render_file_browser(f, app, area),
         Mode::Search => render_search(f, app, area),
@@ -232,6 +233,92 @@ fn render_editor(f: &mut Frame, app: &App, area: Rect) {
                 f.render_widget(msg, msg_area);
             }
         }
+    }
+}
+
+fn render_folder_select(f: &mut Frame, app: &App, area: Rect) {
+    let fg = app.get_theme_fg();
+    let dim = app.get_dim_color();
+    let accent = app.get_accent_color();
+
+    let v_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // title
+            Constraint::Length(1), // breadcrumb
+            Constraint::Length(1), // separator
+            Constraint::Fill(1),   // folders
+            Constraint::Length(1), // filter / hint
+        ])
+        .split(area);
+
+    // Title
+    let title = Paragraph::new(Line::from(vec![Span::styled(
+        "new note — select folder",
+        Style::default().fg(dim),
+    )]))
+    .alignment(Alignment::Center);
+    f.render_widget(title, v_chunks[0]);
+
+    // Breadcrumb
+    let breadcrumb = Paragraph::new(Line::from(vec![Span::styled(
+        &app.folder_select.path,
+        Style::default().fg(dim),
+    )]))
+    .alignment(Alignment::Left);
+    f.render_widget(breadcrumb, v_chunks[1]);
+
+    // Separator
+    let sep = Paragraph::new(Line::from(vec![Span::styled(
+        "─".repeat(area.width as usize),
+        Style::default().fg(dim),
+    )]));
+    f.render_widget(sep, v_chunks[2]);
+
+    // Folder list
+    let lines: Vec<Line> = app
+        .folder_select
+        .items
+        .iter()
+        .enumerate()
+        .take(v_chunks[3].height as usize)
+        .map(|(i, item)| {
+            let is_selected = i == app.folder_select.index;
+            let prefix = if is_selected { "  > " } else { "    " };
+            let style = if item == "create here" {
+                if is_selected {
+                    Style::default().fg(fg).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(fg)
+                }
+            } else if item == ".." || item.ends_with('/') {
+                Style::default().fg(accent)
+            } else if is_selected {
+                Style::default().fg(fg)
+            } else {
+                Style::default().fg(dim)
+            };
+            Line::from(vec![Span::styled(prefix, style), Span::styled(item, style)])
+        })
+        .collect();
+
+    let list = Paragraph::new(lines);
+    f.render_widget(list, v_chunks[3]);
+
+    // Filter line or hint
+    if app.folder_select.filtering {
+        let filter_line = Paragraph::new(Line::from(vec![
+            Span::styled("/", Style::default().fg(accent)),
+            Span::styled(&app.folder_select.filter, Style::default().fg(fg)),
+            Span::styled("█", Style::default().fg(fg)),
+        ]));
+        f.render_widget(filter_line, v_chunks[4]);
+    } else {
+        let hint = Paragraph::new(Line::from(vec![Span::styled(
+            "enter create here  / filter  h home  esc cancel",
+            Style::default().fg(dim),
+        )]));
+        f.render_widget(hint, v_chunks[4]);
     }
 }
 

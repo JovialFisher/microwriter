@@ -5,8 +5,8 @@ use crate::config::Config;
 use crate::editor::Editor;
 use crate::states::search::fuzzy_match;
 use crate::states::{
-    BrowserAction, BrowserState, MenuAction, MenuState, PaletteAction, PaletteState, SearchAction,
-    SearchState, SettingsAction, SettingsState,
+    BrowserAction, BrowserState, FolderSelectAction, FolderSelectState, MenuAction, MenuState,
+    PaletteAction, PaletteState, SearchAction, SearchState, SettingsAction, SettingsState,
 };
 use crate::storage::Storage;
 
@@ -14,6 +14,7 @@ use crate::storage::Storage;
 pub enum Mode {
     Startup,
     Editor,
+    FolderSelect,
     FileBrowser,
     Search,
     RecentNotes,
@@ -35,6 +36,7 @@ pub struct App {
     // Mode-specific state
     pub menu: MenuState,
     pub browser: BrowserState,
+    pub folder_select: FolderSelectState,
     pub search: SearchState,
     pub palette: PaletteState,
     pub settings: SettingsState,
@@ -66,6 +68,7 @@ impl App {
             editor: Editor::new(),
             menu: MenuState::new(),
             browser: BrowserState::new(),
+            folder_select: FolderSelectState::new(),
             search: SearchState::new(),
             palette: PaletteState::new(),
             settings: SettingsState::new(),
@@ -159,6 +162,7 @@ impl App {
         match self.mode {
             Mode::Startup => self.dispatch_menu(key),
             Mode::Editor => self.dispatch_editor(key),
+            Mode::FolderSelect => self.dispatch_folder_select(key),
             Mode::Focus => self.dispatch_focus(key),
             Mode::FileBrowser => self.dispatch_browser(key),
             Mode::Search => self.dispatch_search(key),
@@ -184,6 +188,36 @@ impl App {
                 self.select_menu_item();
             }
             _ => {}
+        }
+        true
+    }
+
+    fn dispatch_folder_select(&mut self, key: KeyEvent) -> bool {
+        match self.folder_select.handle_key(key) {
+            FolderSelectAction::Cancel => {
+                self.mode = Mode::Startup;
+            }
+            FolderSelectAction::GoUp => {
+                if let Some(parent) = std::path::Path::new(&self.folder_select.path).parent() {
+                    self.folder_select.path = parent.to_string_lossy().to_string();
+                    self.refresh_folder_select();
+                }
+            }
+            FolderSelectAction::GoHome => {
+                if let Some(home) = dirs::home_dir() {
+                    self.folder_select.path = home.to_string_lossy().to_string();
+                    self.refresh_folder_select();
+                }
+            }
+            FolderSelectAction::Select => self.confirm_folder_select(),
+            FolderSelectAction::StartFilter => {
+                self.folder_select.filtering = true;
+                self.folder_select.filter.clear();
+            }
+            FolderSelectAction::FilterChanged => {
+                self.filter_folder_select_items();
+            }
+            FolderSelectAction::None => {}
         }
         true
     }
@@ -497,6 +531,76 @@ impl App {
     }
 
     pub fn new_note(&mut self) {
+        // Choose the destination folder first, then create the note there.
+        self.folder_select.path = self.config.default_folder.clone();
+        self.refresh_folder_select();
+        self.mode = Mode::FolderSelect;
+    }
+
+    fn refresh_folder_select(&mut self) {
+        self.folder_select.items.clear();
+        self.folder_select.index = 0;
+        let path = self.folder_select.path.clone();
+        if let Ok(entries) = std::fs::read_dir(&path) {
+            let mut dirs = Vec::new();
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') {
+                    continue;
+                }
+                if entry.path().is_dir() {
+                    dirs.push(format!("{}/", name));
+                }
+                // Only directories are listed; files are not valid destinations.
+            }
+            dirs.sort();
+            self.folder_select.items.push("create here".to_string());
+            if std::path::Path::new(&self.folder_select.path)
+                .parent()
+                .is_some()
+            {
+                self.folder_select.items.push("..".to_string());
+            }
+            self.folder_select.items.extend(dirs);
+        }
+    }
+
+    fn filter_folder_select_items(&mut self) {
+        self.refresh_folder_select();
+        let query = self.folder_select.filter.to_lowercase();
+        self.folder_select
+            .items
+            .retain(|item| {
+                item == "create here" || item == ".." || item.to_lowercase().contains(&query)
+            });
+        if self.folder_select.index >= self.folder_select.items.len() {
+            self.folder_select.index = self.folder_select.items.len().saturating_sub(1);
+        }
+    }
+
+    fn confirm_folder_select(&mut self) {
+        match self.folder_select.selected_item() {
+            Some("create here") => {
+                let folder = self.folder_select.path.clone();
+                self.mode = Mode::Startup;
+                self.create_note_in(&folder);
+            }
+            Some("..") => {
+                if let Some(parent) = std::path::Path::new(&self.folder_select.path).parent() {
+                    self.folder_select.path = parent.to_string_lossy().to_string();
+                    self.refresh_folder_select();
+                }
+            }
+            Some(item) if item.ends_with('/') => {
+                let dir_name = item.trim_end_matches('/');
+                self.folder_select.path = format!("{}/{}", self.folder_select.path, dir_name);
+                self.refresh_folder_select();
+            }
+            _ => {}
+        }
+    }
+
+    fn create_note_in(&mut self, folder: &str) {
         let filename = if self.config.timestamp_filenames {
             chrono::Local::now()
                 .format("%Y-%m-%d-%H-%M.txt")
@@ -504,7 +608,7 @@ impl App {
         } else {
             "untitled.txt".to_string()
         };
-        let path = format!("{}/{}", self.config.default_folder, filename);
+        let path = format!("{}/{}", folder, filename);
         self.editor = Editor::new();
         self.editor.file_path = Some(path.clone());
         self.editor.modified = true;

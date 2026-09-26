@@ -10,7 +10,7 @@ The startup menu is the home of `microwriter`; every option is one keypress away
 
 | Shortcut | Menu item    | Description |
 |----------|--------------|-------------|
-| `n`      | new note     | Create a new text file in your default folder and start writing. |
+| `n`      | new note     | Pick a folder (defaults to your default folder), then start writing. |
 | `o`      | open note    | Browse `.txt`, `.md`, `.rst`, and `.log` files locally. |
 | `r`      | recent notes | Recently opened files grouped by *today / yesterday / this week / older*. |
 | `f`      | search       | Fuzzy filename search across your default folder. |
