@@ -1,8 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::config::Config;
-use crate::editor::Editor;
+use crate::editor::{Alignment, Editor};
 use crate::states::search::fuzzy_match;
 use crate::states::{
     BrowserAction, BrowserState, FolderSelectAction, FolderSelectState, MenuAction, MenuState,
@@ -24,6 +24,18 @@ pub enum Mode {
     Focus,
     RecoveryPrompt,
     Goals,
+}
+
+/// How often the writing statistics are written out while the app runs.
+const STATS_FLUSH: Duration = Duration::from_secs(20);
+
+/// One row of the goals screen's day list.
+pub struct DayRow {
+    /// `today`, `yesterday`, or `MM-DD`.
+    pub label: String,
+    pub words: usize,
+    pub minutes: u64,
+    pub documents: usize,
 }
 
 pub struct App {
@@ -56,6 +68,20 @@ pub struct App {
     // Autosave
     pub last_autosave: Instant,
     pub last_save: Instant,
+
+    // Writing statistics (see the goals screen)
+    last_tick: Instant,
+    /// Milliseconds spent writing in this run, and today across runs.
+    session_millis: u64,
+    today_millis: u64,
+    /// Word count and editor revision at the last look, so words added can be
+    /// counted without re-reading the buffer every frame.
+    counted_words: usize,
+    counted_revision: u64,
+    /// When the statistics were last written out, and whether they have changed
+    /// since — so a crash costs seconds of them, not the whole day.
+    last_stats_save: Instant,
+    stats_dirty: bool,
 }
 
 impl App {
@@ -80,6 +106,13 @@ impl App {
             recent_index: 0,
             last_autosave: Instant::now(),
             last_save: Instant::now(),
+            last_tick: Instant::now(),
+            session_millis: 0,
+            today_millis: 0,
+            counted_words: 0,
+            counted_revision: 0,
+            last_stats_save: Instant::now(),
+            stats_dirty: false,
         }
     }
 
@@ -91,6 +124,8 @@ impl App {
         if let Ok(s) = Storage::load() {
             self.storage = s;
         }
+        // Carry today's writing time over from earlier runs.
+        self.today_millis = self.storage.today().seconds * 1000;
 
         if let Some(path) = &self.storage.last_session_file {
             if std::path::Path::new(path).exists() {
@@ -115,22 +150,21 @@ impl App {
 
     pub fn apply_theme(&mut self) {}
 
+    /// Leave the application, writing the open buffer first so nothing typed is
+    /// lost. Every exit path goes through here.
+    pub fn quit(&mut self) {
+        if self.editor.is_modified() {
+            self.save_current_file();
+        }
+        self.should_quit = true;
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         // Global shortcuts
         if key.modifiers == KeyModifiers::CONTROL {
             match key.code {
-                KeyCode::Char('c') => {
-                    if self.mode == Mode::Editor || self.mode == Mode::Focus {
-                        self.save_current_file();
-                    }
-                    self.should_quit = true;
-                    return false;
-                }
-                KeyCode::Char('q') => {
-                    if self.mode == Mode::Editor || self.mode == Mode::Focus {
-                        self.save_current_file();
-                    }
-                    self.should_quit = true;
+                KeyCode::Char('c') | KeyCode::Char('q') => {
+                    self.quit();
                     return false;
                 }
                 KeyCode::Char('s') => {
@@ -180,7 +214,7 @@ impl App {
     fn dispatch_menu(&mut self, key: KeyEvent) -> bool {
         match self.menu.handle_key(key) {
             MenuAction::Quit => {
-                self.should_quit = true;
+                self.quit();
                 return false;
             }
             MenuAction::Select => self.select_menu_item(),
@@ -238,6 +272,25 @@ impl App {
                     self.show_status(&format!("match {}/{}", current, total));
                 } else {
                     self.show_status("no match");
+                }
+                self.editor.refresh_ghost();
+            }
+            KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
+                self.cycle_alignment();
+            }
+            KeyCode::Char('z') if key.modifiers == KeyModifiers::CONTROL => {
+                if self.editor.undo() {
+                    self.show_status("undo");
+                } else {
+                    self.show_status("nothing to undo");
+                }
+                self.editor.refresh_ghost();
+            }
+            KeyCode::Char('y') if key.modifiers == KeyModifiers::CONTROL => {
+                if self.editor.redo() {
+                    self.show_status("redo");
+                } else {
+                    self.show_status("nothing to redo");
                 }
                 self.editor.refresh_ghost();
             }
@@ -525,9 +578,25 @@ impl App {
             "search" => self.open_search(),
             "settings" => self.open_settings(),
             "help" => self.open_help(),
-            "exit" => self.should_quit = true,
+            "exit" => self.quit(),
             _ => {}
         }
+    }
+
+    /// The text alignment currently in effect for the writing surface.
+    pub fn alignment(&self) -> Alignment {
+        Alignment::parse(&self.config.alignment)
+    }
+
+    /// Cycle the writing alignment: left → center → right → justified → left.
+    pub fn cycle_alignment(&mut self) {
+        self.set_alignment(self.alignment().next());
+        self.show_status(&format!("alignment: {}", self.config.alignment));
+    }
+
+    /// Apply an alignment to the document and remember it as the default.
+    fn set_alignment(&mut self, alignment: Alignment) {
+        self.config.alignment = alignment.label().to_string();
     }
 
     pub fn new_note(&mut self) {
@@ -568,11 +637,9 @@ impl App {
     fn filter_folder_select_items(&mut self) {
         self.refresh_folder_select();
         let query = self.folder_select.filter.to_lowercase();
-        self.folder_select
-            .items
-            .retain(|item| {
-                item == "create here" || item == ".." || item.to_lowercase().contains(&query)
-            });
+        self.folder_select.items.retain(|item| {
+            item == "create here" || item == ".." || item.to_lowercase().contains(&query)
+        });
         if self.folder_select.index >= self.folder_select.items.len() {
             self.folder_select.index = self.folder_select.items.len().saturating_sub(1);
         }
@@ -611,8 +678,10 @@ impl App {
         let path = format!("{}/{}", folder, filename);
         self.editor = Editor::new();
         self.editor.file_path = Some(path.clone());
-        self.editor.modified = true;
+        self.editor.mark_unsaved();
+        self.note_document(&path);
         self.storage.last_session_file = Some(path);
+        self.reset_word_baseline();
         self.mode = Mode::Editor;
     }
 
@@ -778,17 +847,8 @@ impl App {
     pub fn open_command_palette(&mut self) {
         self.palette.query.clear();
         self.palette.index = 0;
-        self.palette.items = vec![
-            "new note".into(),
-            "open note".into(),
-            "toggle wrap".into(),
-            "toggle line numbers".into(),
-            "focus mode".into(),
-            "goals".into(),
-            "settings".into(),
-            "help".into(),
-            "quit".into(),
-        ];
+        // Rebuild from the one command list, so nothing can drift.
+        self.palette.filter();
         self.mode = Mode::CommandPalette;
     }
 
@@ -815,6 +875,14 @@ impl App {
                 };
                 self.mode = Mode::Editor;
             }
+            "export html" => {
+                self.export_html();
+                self.mode = Mode::Editor;
+            }
+            "align left" => self.execute_alignment(Alignment::Left),
+            "align center" => self.execute_alignment(Alignment::Center),
+            "align right" => self.execute_alignment(Alignment::Right),
+            "align justified" => self.execute_alignment(Alignment::Justify),
             "focus mode" => {
                 self.mode = Mode::Focus;
             }
@@ -829,14 +897,18 @@ impl App {
                 self.mode = Mode::Startup;
                 self.open_help();
             }
-            "quit" => {
-                self.save_current_file();
-                self.should_quit = true;
-            }
+            "quit" => self.quit(),
             _ => {
                 self.mode = Mode::Editor;
             }
         }
+    }
+
+    /// Run an alignment choice from the command palette, then resume writing.
+    fn execute_alignment(&mut self, alignment: Alignment) {
+        self.set_alignment(alignment);
+        self.mode = Mode::Editor;
+        self.show_status(&format!("alignment: {}", self.config.alignment));
     }
 
     pub fn open_file(&mut self, path: &str) {
@@ -845,17 +917,20 @@ impl App {
                 self.editor = Editor::new();
                 self.editor.file_path = Some(path.to_string());
                 self.editor.set_content(&content);
-                self.editor.modified = false;
                 self.load_cross_file_words(path);
                 self.storage.track_file(path);
+                self.note_document(path);
                 self.storage.last_session_file = Some(path.to_string());
+                self.reset_word_baseline();
                 self.mode = Mode::Editor;
             }
             Err(_) => {
                 self.editor = Editor::new();
                 self.editor.file_path = Some(path.to_string());
-                self.editor.modified = true;
+                self.editor.mark_unsaved();
+                self.note_document(path);
                 self.storage.last_session_file = Some(path.to_string());
+                self.reset_word_baseline();
                 self.mode = Mode::Editor;
             }
         }
@@ -886,14 +961,14 @@ impl App {
             let tmp_path = format!("{}.tmp", path);
             if std::fs::write(&tmp_path, &content).is_ok() {
                 if std::fs::rename(&tmp_path, path).is_ok() {
-                    self.editor.modified = false;
+                    self.editor.mark_saved();
                     self.last_save = Instant::now();
                     self.show_status("saved");
                     self.storage.track_file(path);
                     self.storage.last_session_file = Some(path.clone());
                 } else {
                     if std::fs::write(path, &content).is_ok() {
-                        self.editor.modified = false;
+                        self.editor.mark_saved();
                         self.last_save = Instant::now();
                         self.show_status("saved");
                         self.storage.track_file(path);
@@ -905,6 +980,145 @@ impl App {
         }
     }
 
+    /// Per-frame upkeep: note time spent writing, flush the statistics, then
+    /// consider autosaving.
+    pub fn tick(&mut self) {
+        self.track_writing();
+        self.flush_stats();
+        self.autosave_tick();
+    }
+
+    /// Accumulate writing time and words added for the goals screen.
+    ///
+    /// Time only accrues while a document is open, so sitting on the menu is
+    /// not counted as writing.
+    fn track_writing(&mut self) {
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(self.last_tick).as_millis() as u64;
+        self.last_tick = now;
+
+        if self.mode != Mode::Editor && self.mode != Mode::Focus {
+            return;
+        }
+        self.session_millis += elapsed;
+        self.today_millis += elapsed;
+
+        // Words are only recounted when the text itself changed.
+        let mut added = 0;
+        if self.editor.revision() != self.counted_revision {
+            self.counted_revision = self.editor.revision();
+            let words = self.editor.word_count();
+            if words > self.counted_words {
+                added = words - self.counted_words;
+            }
+            self.counted_words = words;
+        }
+
+        let seconds = self.today_millis / 1000;
+        let mut changed = false;
+        {
+            let today = self.storage.today();
+            if today.seconds != seconds {
+                today.seconds = seconds;
+                changed = true;
+            }
+            if added > 0 {
+                today.words += added;
+                changed = true;
+            }
+        }
+        if changed {
+            self.stats_dirty = true;
+        }
+    }
+
+    /// Write the statistics out every so often while they are changing.
+    fn flush_stats(&mut self) {
+        if !self.stats_dirty || self.last_stats_save.elapsed() < STATS_FLUSH {
+            return;
+        }
+        // Throttle retries too, so a failing disk isn't hammered every frame.
+        self.last_stats_save = Instant::now();
+        if self.storage.save().is_ok() {
+            self.stats_dirty = false;
+        }
+    }
+
+    /// Begin counting from a freshly loaded document, so its existing words are
+    /// not reported as written today.
+    fn reset_word_baseline(&mut self) {
+        self.counted_words = self.editor.word_count();
+        self.counted_revision = self.editor.revision();
+    }
+
+    /// Record that a document was opened today. Worth persisting, so the day's
+    /// document count survives a crash.
+    fn note_document(&mut self, path: &str) {
+        self.storage.track_document(path);
+        self.stats_dirty = true;
+    }
+
+    /// Whole minutes spent writing in this run.
+    pub fn session_minutes(&self) -> u64 {
+        self.session_millis / 60_000
+    }
+
+    /// The most recent days of writing, newest first.
+    ///
+    /// A day with no writing yet has no record at all, so today is added as an
+    /// empty row rather than the list starting at yesterday.
+    pub fn recent_days(&self, count: usize) -> Vec<DayRow> {
+        // Order by date rather than trusting the file's insertion order, which
+        // a hand-edited storage.json need not keep.
+        let mut days: Vec<&crate::storage::SessionStats> =
+            self.storage.session_log.iter().collect();
+        days.sort_by(|a, b| b.date.cmp(&a.date));
+        days.truncate(count);
+
+        let mut rows: Vec<DayRow> = days
+            .into_iter()
+            .map(|day| DayRow {
+                label: crate::storage::day_label(&day.date),
+                words: day.words,
+                minutes: day.seconds / 60,
+                documents: day.files.len(),
+            })
+            .collect();
+
+        if self.storage.today_stats().is_none() {
+            rows.insert(
+                0,
+                DayRow {
+                    label: "today".to_string(),
+                    words: 0,
+                    minutes: 0,
+                    documents: 0,
+                },
+            );
+            rows.truncate(count);
+        }
+        rows
+    }
+
+    /// Write the current note beside itself as a standalone HTML page, so it
+    /// can be shared or printed without a terminal.
+    fn export_html(&mut self) {
+        let Some(path) = self.editor.file_path.clone() else {
+            self.show_status("nothing to export");
+            return;
+        };
+        let source = std::path::Path::new(&path);
+        let title = source
+            .file_stem()
+            .map_or_else(|| "note".to_string(), |stem| stem.to_string_lossy().into());
+        let page = crate::export::html(&title, &self.editor.get_content());
+
+        match std::fs::write(source.with_extension("html"), page) {
+            Ok(()) => self.show_status(&format!("exported {title}.html")),
+            Err(_) => self.show_status("export failed"),
+        }
+    }
+
     pub fn autosave_tick(&mut self) {
         if self.config.autosave == "disabled" {
             return;
@@ -912,7 +1126,7 @@ impl App {
         if self.mode != Mode::Editor && self.mode != Mode::Focus {
             return;
         }
-        if !self.editor.modified {
+        if !self.editor.is_modified() {
             return;
         }
 
@@ -965,6 +1179,7 @@ impl App {
                     "off".into()
                 }
             }
+            "alignment" => self.config.alignment.clone(),
             "autosave" => self.config.autosave.clone(),
             "timestamp filenames" => {
                 if self.config.timestamp_filenames {
@@ -994,6 +1209,7 @@ impl App {
             "cursor" => self.config.cursor_style = value,
             "line numbers" => self.config.line_numbers = value,
             "word wrap" => self.config.wrap = value == "on",
+            "alignment" => self.config.alignment = value,
             "autosave" => self.config.autosave = value,
             "default folder" => {}
             "timestamp filenames" => self.config.timestamp_filenames = value == "on",
@@ -1057,5 +1273,126 @@ impl App {
             "solarized dark" => ratatui::style::Color::Rgb(38, 139, 210),
             _ => ratatui::style::Color::Rgb(120, 120, 120),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(name: &str) -> String {
+        std::env::temp_dir()
+            .join(name)
+            .to_string_lossy()
+            .to_string()
+    }
+
+    #[test]
+    fn recent_days_always_start_with_today() {
+        let app = App::new();
+        // Nothing recorded yet: today still shows, as an empty row.
+        let rows = app.recent_days(7);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "today");
+        assert_eq!(rows[0].words, 0);
+
+        let mut app = App::new();
+        app.storage.session_log.push(crate::storage::SessionStats {
+            date: crate::storage::today_date(),
+            words: 100,
+            seconds: 120,
+            files: vec!["/notes/a.txt".to_string()],
+        });
+        let rows = app.recent_days(7);
+        assert_eq!(rows[0].label, "today");
+        assert_eq!(rows[0].words, 100);
+        assert_eq!(rows[0].minutes, 2);
+        assert_eq!(rows[0].documents, 1);
+    }
+
+    #[test]
+    fn recent_days_are_newest_first_and_capped() {
+        let mut app = App::new();
+        let today = chrono::Local::now().date_naive();
+        // Deliberately pushed newest-first, the opposite of how the log fills,
+        // to prove the order comes from the dates and not the file.
+        for back in 0..10 {
+            let date = (today - chrono::Days::new(back))
+                .format("%Y-%m-%d")
+                .to_string();
+            app.storage.session_log.push(crate::storage::SessionStats {
+                date,
+                ..Default::default()
+            });
+        }
+
+        let rows = app.recent_days(7);
+        assert_eq!(rows.len(), 7);
+        assert_eq!(rows[0].label, "today");
+        assert_eq!(rows[1].label, "yesterday");
+        // The oldest days fall off the end rather than the newest.
+        assert_eq!(
+            rows[6].label,
+            (today - chrono::Days::new(6)).format("%m-%d").to_string()
+        );
+    }
+
+    #[test]
+    fn exporting_writes_a_page_beside_the_note() {
+        let dir = std::env::temp_dir();
+        let note = dir.join("microwriter-export-test.txt");
+        let page = dir.join("microwriter-export-test.html");
+        let _ = std::fs::remove_file(&page);
+
+        let mut app = App::new();
+        app.editor.file_path = Some(note.to_string_lossy().to_string());
+        app.editor.set_content("hello & <world>");
+
+        app.export_html();
+
+        let html = std::fs::read_to_string(&page).unwrap();
+        assert!(html.contains("hello &amp; &lt;world&gt;"));
+        assert!(html.contains("<title>microwriter-export-test</title>"));
+        let _ = std::fs::remove_file(&page);
+    }
+
+    #[test]
+    fn quitting_writes_the_open_buffer() {
+        let path = temp_path("microwriter-quit-dirty.txt");
+        let _ = std::fs::remove_file(&path);
+
+        let mut app = App::new();
+        app.editor.file_path = Some(path.clone());
+        app.editor.set_content("typed, not yet saved");
+        app.editor.move_line_end();
+        app.editor.insert_char('!');
+        assert!(app.editor.is_modified());
+
+        app.quit();
+
+        assert!(app.should_quit);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "typed, not yet saved!"
+        );
+        assert!(!app.editor.is_modified());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn quitting_leaves_an_untouched_buffer_alone() {
+        let path = temp_path("microwriter-quit-clean.txt");
+        let _ = std::fs::remove_file(&path);
+
+        let mut app = App::new();
+        app.editor.file_path = Some(path.clone());
+        app.editor.set_content("exactly as it is on disk");
+        assert!(!app.editor.is_modified());
+
+        app.quit();
+
+        assert!(app.should_quit);
+        // Nothing was typed, so nothing is written back over the file.
+        assert!(!std::path::Path::new(&path).exists());
     }
 }

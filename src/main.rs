@@ -9,6 +9,7 @@ use std::{io, time::Duration};
 mod app;
 mod config;
 mod editor;
+mod export;
 mod states;
 mod storage;
 mod ui;
@@ -83,8 +84,8 @@ fn run_app(
             }
         }
 
-        // Autosave tick
-        app.autosave_tick();
+        // Writing statistics and the autosave tick
+        app.tick();
 
         if app.should_quit {
             break;

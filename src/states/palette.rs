@@ -1,5 +1,26 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
+/// Every palette command, in display order.
+///
+/// Kept in one place so construction, filtering, and dispatch cannot drift
+/// apart — they previously each held their own copy of this list.
+pub const COMMANDS: &[&str] = &[
+    "new note",
+    "open note",
+    "toggle wrap",
+    "toggle line numbers",
+    "export html",
+    "align left",
+    "align center",
+    "align right",
+    "align justified",
+    "focus mode",
+    "goals",
+    "settings",
+    "help",
+    "quit",
+];
+
 pub enum PaletteAction {
     Cancel,
     Confirm,
@@ -17,17 +38,7 @@ impl PaletteState {
     pub fn new() -> Self {
         Self {
             query: String::new(),
-            items: vec![
-                "new note".into(),
-                "open note".into(),
-                "toggle wrap".into(),
-                "toggle line numbers".into(),
-                "focus mode".into(),
-                "goals".into(),
-                "settings".into(),
-                "help".into(),
-                "quit".into(),
-            ],
+            items: COMMANDS.iter().map(|s| s.to_string()).collect(),
             index: 0,
         }
     }
@@ -73,26 +84,11 @@ impl PaletteState {
     }
 
     pub fn filter(&mut self) {
-        let all_items = vec![
-            "new note",
-            "open note",
-            "toggle wrap",
-            "toggle line numbers",
-            "focus mode",
-            "goals",
-            "settings",
-            "help",
-            "quit",
-        ];
-        if self.query.is_empty() {
-            self.items = all_items.iter().map(|s| s.to_string()).collect();
-        } else {
-            self.items = all_items
-                .iter()
-                .filter(|s| s.to_lowercase().contains(&self.query))
-                .map(|s| s.to_string())
-                .collect();
-        }
+        self.items = COMMANDS
+            .iter()
+            .filter(|command| self.query.is_empty() || command.to_lowercase().contains(&self.query))
+            .map(|command| command.to_string())
+            .collect();
         if self.index >= self.items.len() {
             self.index = self.items.len().saturating_sub(1);
         }

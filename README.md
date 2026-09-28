@@ -24,10 +24,10 @@ You can also jump straight to **new note** (`Ctrl+N`), **open note**
 
 Beyond the menu, `microwriter` has four more screens:
 
-- **Editor** — the writing surface; line numbers, wrap, and an optional status line.
+- **Editor** — the writing surface; line numbers, wrap, text alignment, and an optional status line.
 - **Focus mode** — the editor with every decoration stripped (`Ctrl+P` → *focus mode*).
 - **Recovery prompt** — appears on startup if the previous run left a file open.
-- **Goals** — word / character / reading-time statistics (`Ctrl+P` → *goals*).
+- **Goals** — word / character / reading-time statistics, this run's writing time, and today's progress (`Ctrl+P` → *goals*).
 
 ## launch
 
@@ -99,6 +99,8 @@ cargo test
 | `Enter`                    | newline |
 | `Backspace` / `Delete`     | delete |
 | `Tab`                      | tab, or *N* spaces depending on *tabs/spaces* |
+| `Ctrl+L`                   | cycle text alignment: left → center → right → justified |
+| `Ctrl+Z` / `Ctrl+Y`        | undo / redo |
 
 ### file browser
 
@@ -172,7 +174,7 @@ platform's `Documents` directory.
 
 | Key                    | Default      | Allowed |
 |------------------------|--------------|---------|
-| `theme`                | `"dark"`     | `dark` / `light` / `paper` *(same palette as `light`)* / `amber terminal` / `green phosphor` / `nord` / `solarized dark` |
+| `theme`                | `"dark"`     | `dark` / `light` / `paper` *(same palette as `light`)* / `amber terminal` / `green phosphor` / `nord` / `solarized dark` / `terminal default` *(synonym for `dark`)* |
 | `cursor_style`         | `"block"`    | `block` / `beam` / `underline` |
 | `line_numbers`         | `"off"`      | `off` / `relative` / `absolute` |
 | `wrap`                 | `true`       | `true` / `false` |
@@ -182,6 +184,7 @@ platform's `Documents` directory.
 | `use_tabs`             | `false`      | `true` / `false` |
 | `tab_spaces`           | `4`          | integer — width when `use_tabs` is `false` |
 | `show_status`          | `false`      | `true` / `false` (also forced on inside **Goals**) |
+| `alignment`            | `"left"`     | `left` / `center` / `right` / `justified` (display only — the file keeps its raw text) |
 | `startup_behavior`     | `"menu"`     | declared in config but currently **unused** (mapped for future work) |
 
 ### example
@@ -194,10 +197,10 @@ default_folder = "/absolute/path/to/notes"
 
 ### themes
 
-The settings UI exposes `dark`, `light`, and `terminal default` (currently a
-synonym for `dark`). The other four themes work in the engine but must be
-set by editing `config.toml`. All themes are deliberately monochrome or
-near-monochrome.
+The settings UI exposes every theme — `dark`, `light`, `paper`, `amber
+terminal`, `green phosphor`, `nord`, `solarized dark`, and `terminal default`
+(still a synonym for `dark`). `paper` shares `light`'s palette by design. All
+themes are deliberately monochrome or near-monochrome.
 
 ## supported file types
 
@@ -209,9 +212,29 @@ Other extensions are ignored by design — `microwriter` is for plain text.
 - **Save** (`Ctrl+S`) writes to `<path>.tmp` and renames it over the target
   — atomic; a crash mid-save can't corrupt the document. A small `saved`
   indicator flashes bottom-right for two seconds.
+- **Undo / redo** (`Ctrl+Z` / `Ctrl+Y`) walks a bounded history: at most 500
+  steps, and at most four million bytes of text across all of them. A run of
+  typing or of deleting collapses into a single step, so undo removes a word
+  rather than a letter — but moving the caret, pressing Enter, or accepting a
+  completion starts a fresh step. The history is dropped when another file is
+  opened. Each step carries a revision, so undoing back to the text you last
+  saved clears the *modified* indicator and stops autosave, exactly as if you
+  had just saved.
 - **Autosave** is set in **Settings > autosave** (15 s / 30 s / 1 min /
   5 min). It only ticks while the buffer is modified and only inside the
   editor or focus mode.
+- **Word wrap** (`wrap`, *Settings > word wrap*, or `Ctrl+P` → *toggle
+  wrap*) is on by default. Long paragraphs soft-wrap at the right margin,
+  breaking after a space so words stay whole; a word wider than the screen is
+  hard-broken rather than hidden. Continuation rows leave the line-number
+  gutter blank. With `wrap = false` a logical line stays one row and the view
+  slides sideways to follow the caret.
+- **Alignment** (`Ctrl+L`, *Settings > alignment*, or `Ctrl+P` → *align
+  …*) cycles **left → center → right → justified** while you write. It is a
+  view setting only: the saved file always keeps plain, unaligned text, and
+  the choice is remembered in `config.toml`. Justified paragraphs widen the
+  spaces between words so every wrapped row but the last one is flush with
+  both margins.
 - **Fuzzy search** uses position + consecutive-character + word-boundary
   scoring (`src/states/search.rs::fuzzy_match`) with a +10 boost for any
   file you've opened recently.
@@ -219,8 +242,21 @@ Other extensions are ignored by design — `microwriter` is for plain text.
   exists next startup, `microwriter` offers to reopen it. `Esc` only hides the
   prompt for that run; pick **no** to permanently skip.
 - **Goals** (`Ctrl+P` → *goals*) shows word count, character count, and a
-  rough reading-time estimate (`max(1, words / 200)` minutes). No streaks,
-  no achievements, no network sync — deliberately so.
+  rough reading-time estimate (`max(1, words / 200)` minutes), followed by
+  *recent days* — the last seven days of writing, newest first, labelled
+  `today` / `yesterday` / `MM-DD`.
+- **Session tracking** runs quietly behind the goals screen. *Session time*
+  counts only the minutes a document is open — sitting on the menu is not
+  writing — and each day records the words added, the minutes written, and
+  the documents touched, with today's row also showing the document count.
+  Thirty days are kept in `storage.json` under a local date, flushed every
+  20 seconds while you write so a crash costs seconds rather than the whole
+  day. No streaks, no achievements, no network sync — deliberately so.
+- **Export** (`Ctrl+P` → *export html*) writes a standalone HTML page beside
+  the note and named after it (`chapter.txt` → `chapter.html`). The text is
+  kept verbatim and escaped, so the page opens cleanly in a browser and can
+  be shared or printed to PDF from there — no rendering engine inside
+  `microwriter`.
 
 ## project structure
 
@@ -231,7 +267,8 @@ src/
 ├── editor.rs   # UTF-8 buffer, cursor, scroll
 ├── ui.rs       # ratatui rendering for every mode
 ├── config.rs   # config.toml (serde + toml)
-├── storage.rs  # storage.json — recents + last session
+├── storage.rs  # storage.json — recents, last session, daily statistics
+├── export.rs   # note → standalone HTML
 └── states/
     ├── menu.rs
     ├── browser.rs

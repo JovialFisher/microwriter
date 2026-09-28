@@ -1,4 +1,5 @@
 use crate::app::{App, Mode};
+use crate::editor::{justify_line, should_justify, Alignment as TextAlign};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -6,9 +7,20 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 /// Version codename for the current release.
 pub const VERSION_CODENAME: &str = "v1.0.0 \"White Mesa\"";
+
+/// Map the document alignment onto ratatui's line alignment. Justified text is
+/// widened ahead of time by the editor, so it renders as left-aligned text.
+fn ratatui_alignment(alignment: TextAlign) -> Alignment {
+    match alignment {
+        TextAlign::Center => Alignment::Center,
+        TextAlign::Right => Alignment::Right,
+        TextAlign::Left | TextAlign::Justify => Alignment::Left,
+    }
+}
 
 pub fn render(f: &mut Frame, app: &App) {
     let bg = app.get_theme_bg();
@@ -124,84 +136,114 @@ fn render_editor(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     let editor_area = v_chunks[0];
+    let alignment = app.alignment();
 
-    // Render lines
-    let visible_lines: Vec<Line> = app
+    // Line numbers sit in their own gutter so aligning the text never moves them.
+    let (gutter_area, text_area) = if line_number_width > 0 {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(line_number_width), Constraint::Fill(1)])
+            .split(editor_area);
+        (Some(columns[0]), columns[1])
+    } else {
+        (None, editor_area)
+    };
+    let text_width = text_area.width as usize;
+    // `wrap = false` keeps logical lines whole and slides the view sideways.
+    let wrap_width = if app.config.wrap { text_width } else { 0 };
+    let cursor_line = app.editor.cursor_row + 1;
+    app.editor
+        .set_viewport(wrap_width, editor_area.height as usize);
+    let mut gutter_lines: Vec<Line> = Vec::new();
+    let mut text_lines: Vec<Line> = Vec::new();
+    let mut caret_column = 0usize;
+
+    for rendered in app
         .editor
-        .lines
-        .iter()
-        .enumerate()
-        .skip(app.editor.visible_start())
-        .take(editor_area.height as usize)
-        .map(|(i, line)| {
-            let line_num = i + 1;
-            let cursor_line = app.editor.cursor_row + 1;
-            let is_cursor_line = i == app.editor.cursor_row;
+        .visible_rows(editor_area.height as usize, wrap_width)
+    {
+        let mut text = app
+            .editor
+            .segment_text(rendered.row, rendered.start, rendered.end);
+        let mut caret = rendered.caret;
+        // Justified text fills the margin while the paragraph has a row below.
+        let justified = alignment == TextAlign::Justify
+            && should_justify(&text, text_width, rendered.continues);
+        if justified {
+            let (stretched, mapped) = justify_line(&text, text_width, caret);
+            text = stretched;
+            caret = mapped;
+        }
 
-            let mut spans = Vec::new();
-
-            // Line numbers
-            if line_number_width > 0 {
-                let num_str = match app.config.line_numbers.as_str() {
-                    "relative" => {
-                        if is_cursor_line {
-                            format!("{:>4}  ", line_num)
-                        } else {
-                            let diff = line_num.abs_diff(cursor_line);
-                            format!("{:>4}  ", diff)
-                        }
+        // Wrapped continuation rows leave the numbering gutter blank.
+        if line_number_width > 0 {
+            let num_str = if rendered.start == 0 {
+                let logical = rendered.row + 1;
+                match app.config.line_numbers.as_str() {
+                    "relative" if logical != cursor_line => {
+                        format!("{:>4}  ", logical.abs_diff(cursor_line))
                     }
-                    "absolute" => format!("{:>4}  ", line_num),
-                    _ => String::new(),
-                };
-                spans.push(Span::styled(num_str, Style::default().fg(dim)));
-            }
-
-            // Handle cursor rendering
-            if is_cursor_line {
-                let col = app.editor.cursor_col;
-                let before: String = line.chars().take(col).collect();
-                let at: String = line.chars().skip(col).take(1).collect();
-                let after: String = line.chars().skip(col + 1).collect();
-                let cursor_char = if at.is_empty() { " ".to_string() } else { at };
-                spans.push(Span::styled(before, Style::default().fg(fg)));
-                spans.push(Span::styled(
-                    cursor_char,
-                    Style::default().fg(fg).bg(Color::DarkGray),
-                ));
-                // Render ghost suggestion in dim gray after the cursor
-                // Show when cursor is at a word boundary (next char is non-word or end of line)
-                let at_word_boundary = after.is_empty()
-                    || after
-                        .chars()
-                        .next()
-                        .is_some_and(|c| !c.is_alphanumeric() && c != '_');
-                if at_word_boundary && !app.editor.ghost_suggestion.is_empty() {
-                    spans.push(Span::styled(
-                        &app.editor.ghost_suggestion,
-                        Style::default().fg(Color::DarkGray),
-                    ));
+                    _ => format!("{:>4}  ", logical),
                 }
-                spans.push(Span::styled(after, Style::default().fg(fg)));
-                Line::from(spans)
             } else {
-                spans.push(Span::styled(line, Style::default().fg(fg)));
-                Line::from(spans)
-            }
-        })
-        .collect();
+                " ".repeat(line_number_width as usize)
+            };
+            gutter_lines.push(Line::from(Span::styled(num_str, Style::default().fg(dim))));
+        }
 
-    let editor_text = Text::from(visible_lines);
-    let editor_para = Paragraph::new(editor_text);
-    f.render_widget(editor_para, editor_area);
+        // Handle cursor rendering
+        let Some(offset) = caret else {
+            text_lines.push(Line::from(Span::styled(text, Style::default().fg(fg))));
+            continue;
+        };
+        let before: String = text.chars().take(offset).collect();
+        let at: String = text.chars().skip(offset).take(1).collect();
+        let after: String = text.chars().skip(offset + 1).collect();
+        caret_column = UnicodeWidthStr::width(before.as_str());
+        let cursor_char = if at.is_empty() { " ".to_string() } else { at };
+        let mut spans = vec![
+            Span::styled(before, Style::default().fg(fg)),
+            Span::styled(cursor_char, Style::default().fg(fg).bg(Color::DarkGray)),
+        ];
+        // Render ghost suggestion in dim gray after the cursor, when the
+        // cursor is at a word boundary. A justified row has no spare room for
+        // the hint, but Tab still accepts the completion.
+        let at_word_boundary = after.is_empty()
+            || after
+                .chars()
+                .next()
+                .is_some_and(|c| !c.is_alphanumeric() && c != '_');
+        if !justified && at_word_boundary && !app.editor.ghost_suggestion.is_empty() {
+            spans.push(Span::styled(
+                &app.editor.ghost_suggestion,
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        spans.push(Span::styled(after, Style::default().fg(fg)));
+        text_lines.push(Line::from(spans));
+    }
+
+    if let Some(gutter) = gutter_area {
+        f.render_widget(Paragraph::new(gutter_lines), gutter);
+    }
+    let h_offset = horizontal_offset(caret_column, text_width, wrap_width > 0);
+    let editor_para = Paragraph::new(Text::from(text_lines))
+        .alignment(ratatui_alignment(alignment))
+        .scroll((0, h_offset));
+    f.render_widget(editor_para, text_area);
 
     // Status line
     if status_visible {
+        let alignment_note = match alignment {
+            TextAlign::Left => String::new(),
+            other => format!(" · {}", other.label()),
+        };
         let status_text = format!(
-            "{} · {} words · {}",
+            "{} · {} words{} · {}",
             app.display_path(),
             app.editor.word_count(),
-            if app.editor.modified {
+            alignment_note,
+            if app.editor.is_modified() {
                 "modified"
             } else {
                 "saved"
@@ -219,10 +261,11 @@ fn render_editor(f: &mut Frame, app: &App, area: Rect) {
     if !app.status_message.is_empty() {
         if let Some(timer) = app.status_timer {
             if timer.elapsed().as_secs() < 2 {
+                let msg_width = (app.status_message.chars().count() as u16 + 1).min(area.width);
                 let msg_area = Rect {
-                    x: area.width.saturating_sub(7),
+                    x: area.width.saturating_sub(msg_width),
                     y: area.height.saturating_sub(1),
-                    width: 6,
+                    width: msg_width,
                     height: 1,
                 };
                 let msg = Paragraph::new(Line::from(vec![Span::styled(
@@ -324,42 +367,68 @@ fn render_folder_select(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_focus(f: &mut Frame, app: &App, area: Rect) {
     let fg = app.get_theme_fg();
+    let alignment = app.alignment();
+    let text_width = area.width as usize;
+    let wrap_width = if app.config.wrap { text_width } else { 0 };
+    app.editor.set_viewport(wrap_width, area.height as usize);
+    let mut caret_column = 0usize;
 
     let visible_lines: Vec<Line> = app
         .editor
-        .lines
-        .iter()
-        .enumerate()
-        .skip(app.editor.visible_start())
-        .take(area.height as usize)
-        .map(|(i, line)| {
-            if i == app.editor.cursor_row {
-                let col = app.editor.cursor_col;
-                let before: String = line.chars().take(col).collect();
-                let at: String = line.chars().skip(col).take(1).collect();
-                let after: String = line.chars().skip(col + 1).collect();
-                let cursor_char = if at.is_empty() { " ".to_string() } else { at };
-                let mut spans = vec![
-                    Span::styled(before, Style::default().fg(fg)),
-                    Span::styled(cursor_char, Style::default().fg(fg).bg(Color::DarkGray)),
-                ];
-                if after.is_empty() && !app.editor.ghost_suggestion.is_empty() {
-                    spans.push(Span::styled(
-                        &app.editor.ghost_suggestion,
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
-                spans.push(Span::styled(after, Style::default().fg(fg)));
-                Line::from(spans)
-            } else {
-                Line::from(Span::styled(line, Style::default().fg(fg)))
+        .visible_rows(area.height as usize, wrap_width)
+        .into_iter()
+        .map(|rendered| {
+            let mut text = app
+                .editor
+                .segment_text(rendered.row, rendered.start, rendered.end);
+            let mut caret = rendered.caret;
+            let justified = alignment == TextAlign::Justify
+                && should_justify(&text, text_width, rendered.continues);
+            if justified {
+                let (stretched, mapped) = justify_line(&text, text_width, caret);
+                text = stretched;
+                caret = mapped;
             }
+
+            let Some(offset) = caret else {
+                return Line::from(Span::styled(text, Style::default().fg(fg)));
+            };
+            let before: String = text.chars().take(offset).collect();
+            let at: String = text.chars().skip(offset).take(1).collect();
+            let after: String = text.chars().skip(offset + 1).collect();
+            caret_column = UnicodeWidthStr::width(before.as_str());
+            let cursor_char = if at.is_empty() { " ".to_string() } else { at };
+            let mut spans = vec![
+                Span::styled(before, Style::default().fg(fg)),
+                Span::styled(cursor_char, Style::default().fg(fg).bg(Color::DarkGray)),
+            ];
+            if after.is_empty() && !justified && !app.editor.ghost_suggestion.is_empty() {
+                spans.push(Span::styled(
+                    &app.editor.ghost_suggestion,
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            spans.push(Span::styled(after, Style::default().fg(fg)));
+            Line::from(spans)
         })
         .collect();
 
     let text = Text::from(visible_lines);
-    let para = Paragraph::new(text);
+    let h_offset = horizontal_offset(caret_column, text_width, wrap_width > 0);
+    let para = Paragraph::new(text)
+        .alignment(ratatui_alignment(alignment))
+        .scroll((0, h_offset));
     f.render_widget(para, area);
+}
+
+/// Columns to slide the writing surface left so a caret past the right margin
+/// stays on screen. Wrapped text never scrolls sideways.
+fn horizontal_offset(caret_column: usize, text_width: usize, wrapping: bool) -> u16 {
+    if wrapping || text_width == 0 || caret_column < text_width {
+        0
+    } else {
+        u16::try_from(caret_column + 1 - text_width).unwrap_or(u16::MAX)
+    }
 }
 
 fn render_file_browser(f: &mut Frame, app: &App, area: Rect) {
@@ -852,6 +921,8 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
         ("ctrl+p", "commands"),
         ("ctrl+q", "quit"),
         ("ctrl+f", "search"),
+        ("ctrl+l", "alignment"),
+        ("ctrl+z / ctrl+y", "undo / redo"),
         ("esc", "menu"),
         ("ctrl+left/right", "jump words"),
         ("ctrl+up/down", "scroll"),
@@ -922,6 +993,11 @@ fn render_recovery(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(options_para, v_chunks[3]);
 }
 
+/// Days of writing history the goals screen lists.
+const WEEK_LENGTH: usize = 7;
+/// Spaces between a row's label column and its value column.
+const LABEL_GAP: usize = 3;
+
 fn render_goals(f: &mut Frame, app: &App, area: Rect) {
     let fg = app.get_theme_fg();
     let dim = app.get_dim_color();
@@ -932,7 +1008,7 @@ fn render_goals(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Fill(1),   // top padding
             Constraint::Length(1), // title
             Constraint::Length(1), // separator
-            Constraint::Fill(1),   // stats
+            Constraint::Fill(2),   // stats
             Constraint::Length(1), // gap
             Constraint::Length(1), // version
         ])
@@ -951,24 +1027,86 @@ fn render_goals(f: &mut Frame, app: &App, area: Rect) {
     )]));
     f.render_widget(sep, v_chunks[2]);
 
-    let words = app.editor.word_count();
-    let chars = app.editor.char_count();
-    let reading_time = app.editor.reading_time_minutes();
-
-    let stats_lines = vec![
-        Line::from(vec![
-            Span::styled("word count        ", Style::default().fg(dim)),
-            Span::styled(format!("{}", words), Style::default().fg(fg)),
-        ]),
-        Line::from(vec![
-            Span::styled("character count   ", Style::default().fg(dim)),
-            Span::styled(format!("{}", chars), Style::default().fg(fg)),
-        ]),
-        Line::from(vec![
-            Span::styled("reading time      ", Style::default().fg(dim)),
-            Span::styled(format!("{} min", reading_time), Style::default().fg(fg)),
-        ]),
+    // Build label/value pairs, then pad every row to one width so centred rows
+    // line their columns up instead of drifting apart.
+    let mut rows: Vec<(String, String)> = vec![
+        ("word count".into(), app.editor.word_count().to_string()),
+        (
+            "character count".into(),
+            app.editor.char_count().to_string(),
+        ),
+        (
+            "reading time".into(),
+            format!("{} min", app.editor.reading_time_minutes()),
+        ),
+        (
+            "session time".into(),
+            format!("{} min", app.session_minutes()),
+        ),
+        (String::new(), String::new()),
+        ("recent days".into(), String::new()),
     ];
+
+    for day in app.recent_days(WEEK_LENGTH) {
+        let mut value = format!("{} words", day.words);
+        if day.minutes > 0 {
+            value.push_str(&format!(" · {} min", day.minutes));
+        }
+        // Documents only mean something for the day being written now.
+        if day.label == "today" && day.documents > 0 {
+            let noun = if day.documents == 1 {
+                "document"
+            } else {
+                "documents"
+            };
+            value.push_str(&format!(" · {} {noun}", day.documents));
+        }
+        rows.push((day.label, value));
+    }
+
+    // Lay the rows out as one block — a label column, a value column, and
+    // trailing padding — so every row is the same width and centring keeps the
+    // columns aligned instead of drifting apart.
+    let label_column = rows
+        .iter()
+        .map(|(label, _)| UnicodeWidthStr::width(label.as_str()) + LABEL_GAP)
+        .max()
+        .unwrap_or(0);
+    let row_width = |label: &str, value: &str| {
+        if value.is_empty() {
+            UnicodeWidthStr::width(label)
+        } else {
+            label_column + UnicodeWidthStr::width(value)
+        }
+    };
+    let total = rows
+        .iter()
+        .map(|(label, value)| row_width(label, value))
+        .max()
+        .unwrap_or(0);
+
+    let stats_lines: Vec<Line> = rows
+        .iter()
+        .take(v_chunks[3].height as usize)
+        .map(|(label, value)| {
+            // Headings and spacers just hold the block width.
+            if value.is_empty() {
+                let pad = total - UnicodeWidthStr::width(label.as_str());
+                return Line::from(Span::styled(
+                    format!("{label}{}", " ".repeat(pad)),
+                    Style::default().fg(dim),
+                ));
+            }
+            let lead = " ".repeat(label_column - UnicodeWidthStr::width(label.as_str()));
+            let tail = " ".repeat(total - row_width(label, value));
+            Line::from(vec![
+                Span::styled(label.clone(), Style::default().fg(dim)),
+                Span::styled(lead, Style::default().fg(dim)),
+                Span::styled(value.clone(), Style::default().fg(fg)),
+                Span::styled(tail, Style::default().fg(fg)),
+            ])
+        })
+        .collect();
 
     let goals_para = Paragraph::new(stats_lines).alignment(Alignment::Center);
     f.render_widget(goals_para, v_chunks[3]);
@@ -1020,5 +1158,173 @@ fn add_recent_group(
             Span::styled(item.clone(), style),
         ]));
         *global_idx += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    /// Render the editor and return one string per terminal row.
+    fn draw(app: &App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render(f, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn editor_app(content: &str, alignment: &str, line_numbers: &str) -> App {
+        let mut app = App::new();
+        app.mode = Mode::Editor;
+        app.config.alignment = alignment.to_string();
+        app.config.line_numbers = line_numbers.to_string();
+        app.editor.set_content(content);
+        app
+    }
+
+    #[test]
+    fn center_alignment_centers_each_line() {
+        let app = editor_app("hi", "center", "off");
+        let rows = draw(&app, 10, 3);
+        assert_eq!(rows[0], "    hi    ");
+    }
+
+    #[test]
+    fn right_alignment_flushes_the_margin() {
+        let app = editor_app("hi", "right", "off");
+        let rows = draw(&app, 10, 3);
+        assert_eq!(rows[0], "        hi");
+    }
+
+    #[test]
+    fn left_alignment_is_unchanged() {
+        let app = editor_app("hi", "left", "off");
+        let rows = draw(&app, 10, 3);
+        assert_eq!(rows[0], "hi        ");
+    }
+
+    #[test]
+    fn justification_fills_the_width_but_not_the_paragraph_end() {
+        let app = editor_app("hello world\nnext line", "justified", "off");
+        let rows = draw(&app, 12, 4);
+        // The paragraph line fills both margins…
+        assert_eq!(rows[0], "hello  world");
+        // …while its final line stays ragged ("next    line" would be stretched).
+        assert_eq!(rows[1], "next line   ");
+        assert_ne!(rows[1], "next    line");
+    }
+
+    #[test]
+    fn line_numbers_stay_left_when_text_is_centered() {
+        let app = editor_app("hi", "center", "absolute");
+        let rows = draw(&app, 16, 3);
+        let gutter = &rows[0][..6];
+        assert_eq!(gutter.trim(), "1");
+        assert!(gutter.starts_with(' '));
+        assert_eq!(&rows[0][6..], "    hi    ");
+    }
+
+    #[test]
+    fn justified_caret_stays_on_its_character() {
+        // `cd` is the paragraph's last line only if another line follows it…
+        let mut app = editor_app("ab cd\nxy", "justified", "off");
+        // …so line 1 stretches to "ab    cd" and the caret (before `c`) follows.
+        app.editor.cursor_col = 3;
+        let mut terminal = Terminal::new(TestBackend::new(8, 2)).unwrap();
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let caret = (0..8u16)
+            .find(|&x| buffer[(x, 0)].bg == Color::DarkGray)
+            .expect("caret cell");
+        assert_eq!(caret, 6);
+        assert_eq!(buffer[(caret, 0)].symbol(), "c");
+    }
+
+    #[test]
+    fn long_lines_wrap_instead_of_truncating() {
+        let app = editor_app("abcdefghijklmnopqrstuvwxyz", "left", "off");
+        let rows = draw(&app, 10, 4);
+        assert_eq!(rows[0], "abcdefghij");
+        assert_eq!(rows[1], "klmnopqrst");
+        assert_eq!(rows[2], "uvwxyz    ");
+    }
+
+    #[test]
+    fn wrapped_rows_justify_to_both_margins() {
+        // One long logical paragraph: every wrapped row but the last stretches.
+        let app = editor_app("aaa bbb ccc ddd", "justified", "off");
+        let rows = draw(&app, 8, 4);
+        assert_eq!(rows[0], "aaa  bbb");
+        assert_eq!(rows[1], "ccc ddd ");
+    }
+
+    #[test]
+    fn wrap_off_scrolls_sideways_to_keep_the_caret_visible() {
+        let mut app = editor_app("abcdefghijklmnopqrst", "left", "off");
+        app.config.wrap = false;
+        app.editor.cursor_col = 15;
+        let mut terminal = Terminal::new(TestBackend::new(10, 3)).unwrap();
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..10u16).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert_eq!(row, "ghijklmnop");
+        // The caret block sits on `p`, the character it belongs to.
+        assert_eq!(buffer[(9, 0)].bg, Color::DarkGray);
+        assert_eq!(buffer[(9, 0)].symbol(), "p");
+    }
+
+    #[test]
+    fn line_numbers_label_only_the_first_wrapped_row() {
+        let app = editor_app("abcdefghijklmnopqrst", "left", "absolute");
+        let rows = draw(&app, 16, 4);
+        assert_eq!(rows[0][..6].trim(), "1");
+        assert_eq!(rows[1][..6].trim(), "");
+    }
+
+    #[test]
+    fn goals_screen_lists_the_recent_days() {
+        let mut app = editor_app("one two three", "left", "off");
+        app.mode = Mode::Goals;
+        app.storage.today().seconds = 3 * 60;
+        app.storage.today().words = 42;
+        app.storage.track_document("/notes/a.txt");
+        // An older day, to prove the list runs past today.
+        app.storage.session_log.insert(
+            0,
+            crate::storage::SessionStats {
+                date: "1999-01-01".to_string(),
+                words: 7,
+                seconds: 60,
+                ..Default::default()
+            },
+        );
+
+        let rows = draw(&app, 80, 24);
+        let screen = rows.join("\n");
+        assert!(screen.contains("word count"));
+        assert!(screen.contains("session time"));
+        assert!(screen.contains("recent days"));
+        assert!(screen.contains("today"));
+        assert!(screen.contains("42 words"));
+        assert!(screen.contains("3 min"));
+        assert!(screen.contains("1 document"));
+        // The older day is labelled by its date, not by a weekday name.
+        assert!(screen.contains("01-01"));
+        assert!(screen.contains("7 words"));
+    }
+
+    #[test]
+    fn focus_mode_honors_alignment() {
+        let mut app = editor_app("hi", "right", "off");
+        app.mode = Mode::Focus;
+        let rows = draw(&app, 10, 3);
+        assert_eq!(rows[0], "        hi");
     }
 }

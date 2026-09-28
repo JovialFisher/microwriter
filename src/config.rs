@@ -15,6 +15,14 @@ pub struct Config {
     pub tab_spaces: usize,
     pub show_status: bool,
     pub startup_behavior: String,
+    /// Default text alignment: `left` / `center` / `right` / `justified`.
+    /// Defaulted so config files written before this setting still load.
+    #[serde(default = "default_alignment")]
+    pub alignment: String,
+}
+
+fn default_alignment() -> String {
+    "left".to_string()
 }
 
 impl Default for Config {
@@ -31,6 +39,7 @@ impl Default for Config {
             tab_spaces: 4,
             show_status: false,
             startup_behavior: "menu".to_string(),
+            alignment: default_alignment(),
         }
     }
 }

@@ -1,11 +1,11 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 pub enum FolderSelectAction {
-    Select,        // enter on the highlighted entry
-    Cancel,        // esc — back to the menu
-    GoUp,          // backspace — parent directory
-    GoHome,        // h — jump to $HOME
-    StartFilter,   // / — filter entries
+    Select,      // enter on the highlighted entry
+    Cancel,      // esc — back to the menu
+    GoUp,        // backspace — parent directory
+    GoHome,      // h — jump to $HOME
+    StartFilter, // / — filter entries
     FilterChanged,
     None,
 }
