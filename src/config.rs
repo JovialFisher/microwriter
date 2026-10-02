@@ -19,6 +19,11 @@ pub struct Config {
     /// Defaulted so config files written before this setting still load.
     #[serde(default = "default_alignment")]
     pub alignment: String,
+    /// Typewriter scrolling: hold the caret around the middle of the screen
+    /// and let the text scroll past it. Defaulted off so existing config files
+    /// keep the original "stay put until the caret reaches an edge" scrolling.
+    #[serde(default)]
+    pub typewriter_scroll: bool,
 }
 
 fn default_alignment() -> String {
@@ -40,6 +45,7 @@ impl Default for Config {
             show_status: false,
             startup_behavior: "menu".to_string(),
             alignment: default_alignment(),
+            typewriter_scroll: false,
         }
     }
 }

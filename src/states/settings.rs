@@ -27,6 +27,7 @@ impl SettingsState {
                 "default folder".into(),
                 "timestamp filenames".into(),
                 "tabs/spaces".into(),
+                "typewriter scroll".into(),
             ],
             category_index: 0,
             options: vec![
@@ -59,6 +60,7 @@ impl SettingsState {
                 vec![],
                 vec!["on".into(), "off".into()],
                 vec!["tabs".into(), "spaces".into()],
+                vec!["on".into(), "off".into()],
             ],
             option_index: 0,
             editing: false,
@@ -77,12 +79,16 @@ impl SettingsState {
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.editing {
-                    if self.option_index > 0 {
-                        self.option_index -= 1;
+                    // Wrap so you never have to backtrack: up past the first
+                    // option lands on the last.
+                    let count = self.options[self.category_index].len();
+                    if count > 0 {
+                        self.option_index = (self.option_index + count - 1) % count;
                     }
                 } else {
-                    if self.category_index > 0 {
-                        self.category_index -= 1;
+                    let count = self.categories.len();
+                    if count > 0 {
+                        self.category_index = (self.category_index + count - 1) % count;
                         self.option_index = 0;
                     }
                 }
@@ -90,13 +96,16 @@ impl SettingsState {
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if self.editing {
-                    let options = &self.options[self.category_index];
-                    if self.option_index < options.len().saturating_sub(1) {
-                        self.option_index += 1;
+                    // Wrap so holding down cycles the options: down past the
+                    // last option lands on the first.
+                    let count = self.options[self.category_index].len();
+                    if count > 0 {
+                        self.option_index = (self.option_index + 1) % count;
                     }
                 } else {
-                    if self.category_index < self.categories.len().saturating_sub(1) {
-                        self.category_index += 1;
+                    let count = self.categories.len();
+                    if count > 0 {
+                        self.category_index = (self.category_index + 1) % count;
                         self.option_index = 0;
                     }
                 }
@@ -138,5 +147,51 @@ impl SettingsState {
 
     pub fn selected_category(&self) -> &str {
         &self.categories[self.category_index]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+
+    fn press(state: &mut SettingsState, code: KeyCode) {
+        state.handle_key(KeyEvent::new(code, KeyModifiers::NONE), "");
+    }
+
+    #[test]
+    fn option_selection_wraps_while_editing() {
+        let mut state = SettingsState::new();
+        state.category_index = 3; // "word wrap": on / off
+        state.editing = true;
+
+        state.option_index = 1;
+        press(&mut state, KeyCode::Down);
+        assert_eq!(
+            state.option_index, 0,
+            "down from the last wraps to the first"
+        );
+
+        press(&mut state, KeyCode::Up);
+        assert_eq!(state.option_index, 1, "up from the first wraps to the last");
+    }
+
+    #[test]
+    fn category_selection_wraps_at_the_ends() {
+        let mut state = SettingsState::new();
+        let last = state.categories.len() - 1;
+
+        state.category_index = last;
+        press(&mut state, KeyCode::Down);
+        assert_eq!(
+            state.category_index, 0,
+            "down from the last wraps to the first"
+        );
+
+        press(&mut state, KeyCode::Up);
+        assert_eq!(
+            state.category_index, last,
+            "up from the first wraps to the last"
+        );
     }
 }

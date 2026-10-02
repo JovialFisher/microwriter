@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecentEntry {
@@ -25,6 +25,80 @@ pub struct SessionStats {
 
 /// Days of history kept before the oldest is dropped.
 const SESSION_LOG_DAYS: usize = 30;
+/// The working copy of the open document, written beside `storage.json` while
+/// the buffer has unsaved changes.
+///
+/// `last_session_file` only remembers *which* file was open, so a crash after
+/// typing would still lose every keystroke made since the last save. Keeping
+/// the buffer itself means the recovery prompt can hand back the real text,
+/// whether or not the file on disk was ever updated.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Draft {
+    /// Where the document lives, if it has a path yet.
+    pub path: Option<String>,
+    /// The full buffer as of the last draft write.
+    pub content: String,
+}
+
+impl Draft {
+    fn draft_path() -> Option<PathBuf> {
+        dirs::data_dir().map(|p| p.join("microwriter").join("session.draft.json"))
+    }
+
+    /// Whether the draft still holds text the file on disk does not — the only
+    /// case worth interrupting startup for.
+    pub fn is_unsaved(&self) -> bool {
+        match &self.path {
+            Some(path) => fs::read_to_string(path)
+                .map(|disk| disk != self.content)
+                .unwrap_or(true),
+            None => !self.content.trim().is_empty(),
+        }
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        let path = Self::draft_path().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "No data directory")
+        })?;
+        self.save_to(&path)
+    }
+
+    /// Write the draft beside `storage.json`, atomically, so an interrupted
+    /// write cannot leave a half-written draft to recover from.
+    pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let content = serde_json::to_string(self)?;
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, content)?;
+        fs::rename(&tmp, path)
+    }
+
+    /// The draft a previous run left behind, or `None` if there is none.
+    pub fn load() -> Option<Draft> {
+        Self::load_from(&Self::draft_path()?)
+    }
+
+    pub fn load_from(path: &Path) -> Option<Draft> {
+        let content = fs::read_to_string(path).ok()?;
+        let draft: Draft = serde_json::from_str(&content).ok()?;
+        // A draft whose text is empty is not worth recovering.
+        if draft.is_unsaved() {
+            Some(draft)
+        } else {
+            None
+        }
+    }
+
+    /// Forget the draft — after saving over it or declining to recover.
+    pub fn clear() {
+        if let Some(path) = Self::draft_path() {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -197,6 +271,45 @@ mod tests {
             storage.today_stats().map(|stats| stats.files.len()),
             Some(2)
         );
+    }
+
+    #[test]
+    fn a_draft_round_trips_and_is_dropped_once_saved() {
+        let dir = std::env::temp_dir().join("microwriter-draft-test");
+        let path = dir.join("session.draft.json");
+        let _ = fs::remove_file(&path);
+
+        let draft = Draft {
+            path: Some("/notes/a.txt".to_string()),
+            content: "half a sentence".to_string(),
+        };
+        draft.save_to(&path).unwrap();
+        let loaded = Draft::load_from(&path).unwrap();
+        assert_eq!(loaded.path.as_deref(), Some("/notes/a.txt"));
+        assert_eq!(loaded.content, "half a sentence");
+
+        // The file on disk still holds the old text, so the draft is unsaved.
+        let note = dir.join("a.txt");
+        fs::write(&note, "old text").unwrap();
+        let mut settled = loaded.clone();
+        settled.path = Some(note.to_string_lossy().to_string());
+        assert!(settled.is_unsaved());
+
+        // Once the file matches, there is nothing left to recover, and a saved
+        // draft is filtered out on load.
+        fs::write(&note, "half a sentence").unwrap();
+        assert!(!settled.is_unsaved());
+        settled.save_to(&path).unwrap();
+        assert!(Draft::load_from(&path).is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_draft_is_not_a_recovery() {
+        let path = std::env::temp_dir().join("microwriter-no-such-draft.json");
+        let _ = fs::remove_file(&path);
+        assert!(Draft::load_from(&path).is_none());
     }
 
     #[test]

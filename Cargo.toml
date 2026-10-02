@@ -17,6 +17,7 @@ toml = "0.8"
 dirs = "5"
 chrono = { version = "0.4", features = ["serde"] }
 unicode-width = "0.2"
+autocomplete = "0.1"
 
 [profile.release]
 opt-level = 3

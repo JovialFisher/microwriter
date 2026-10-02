@@ -1,11 +1,16 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
+use crate::drives::Drive;
+
 pub enum BrowserAction {
     Select,
     GoBack,
     GoHome,
     StartSearch,
     FilterChanged,
+    OpenDrives,
+    CloseDrives,
+    SelectDrive,
     None,
 }
 
@@ -15,6 +20,10 @@ pub struct BrowserState {
     pub path: String,
     pub search: String,
     pub searching: bool,
+    /// Volume roots offered by the `d` overlay (system drive included).
+    pub drives: Vec<Drive>,
+    pub drives_open: bool,
+    pub drives_index: usize,
 }
 
 impl BrowserState {
@@ -25,14 +34,40 @@ impl BrowserState {
             path: String::new(),
             search: String::new(),
             searching: false,
+            drives: Vec::new(),
+            drives_open: false,
+            drives_index: 0,
         }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> BrowserAction {
+        if self.drives_open {
+            return self.handle_drives_key(key);
+        }
         if self.searching {
             return self.handle_search_key(key);
         }
         self.handle_browse_key(key)
+    }
+
+    fn handle_drives_key(&mut self, key: KeyEvent) -> BrowserAction {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => BrowserAction::CloseDrives,
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.drives_index > 0 {
+                    self.drives_index -= 1;
+                }
+                BrowserAction::None
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.drives_index < self.drives.len().saturating_sub(1) {
+                    self.drives_index += 1;
+                }
+                BrowserAction::None
+            }
+            KeyCode::Enter => BrowserAction::SelectDrive,
+            _ => BrowserAction::None,
+        }
     }
 
     fn handle_search_key(&mut self, key: KeyEvent) -> BrowserAction {
@@ -84,6 +119,7 @@ impl BrowserState {
             KeyCode::Enter => BrowserAction::Select,
             KeyCode::Char('/') => BrowserAction::StartSearch,
             KeyCode::Char('h') => BrowserAction::GoHome,
+            KeyCode::Char('d') => BrowserAction::OpenDrives,
             _ => BrowserAction::None,
         }
     }

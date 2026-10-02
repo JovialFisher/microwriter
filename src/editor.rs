@@ -1,6 +1,5 @@
 use std::cell::Cell;
 use std::cmp;
-use std::collections::BTreeSet;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Strip leading/trailing non-alphanumeric chars (except underscore) from a word.
@@ -56,8 +55,11 @@ impl Alignment {
 /// Whether widening `row` to `width` columns would look like justification.
 ///
 /// A row is stretched only when it has an interior run of spaces to grow and
-/// the paragraph continues below it — the final row of a paragraph stays
-/// ragged, exactly as in a printed book.
+/// more of its paragraph wraps below it — the final row of a paragraph stays
+/// ragged, exactly as in a printed book. A row that ends a line you typed
+/// yourself is the last row of its paragraph, so it is never stretched: a
+/// short line stays its natural length instead of being blown across the
+/// screen.
 pub fn should_justify(row: &str, width: usize, continues: bool) -> bool {
     if width == 0 || UnicodeWidthStr::width(row) >= width {
         return false;
@@ -205,13 +207,17 @@ pub struct RenderedRow {
     /// Char range within that line: `start..end`.
     pub start: usize,
     pub end: usize,
-    /// Whether the paragraph continues below, which makes the row a candidate
-    /// for justification.
+    /// Whether another wrapped row of the same paragraph follows below, which
+    /// makes this row a candidate for justification. Only soft wrapping can
+    /// continue a paragraph, so the last row of every typed line is `false`.
     pub continues: bool,
     /// Char offset of the caret inside `start..end`, when the caret is here.
     pub caret: Option<usize>,
 }
 
+/// Most completion candidates kept for one prefix, so cycling through a very
+/// short prefix stays a short walk instead of hundreds of words.
+const AUTOCOMPLETE_LIMIT: usize = 40;
 /// Undo steps kept before the oldest is dropped.
 const UNDO_LIMIT: usize = 500;
 /// Bytes of text kept across the whole history, so opening a large document
@@ -284,6 +290,9 @@ pub struct Editor {
     /// laid out yet", which disables soft wrapping.
     viewport_width: Cell<usize>,
     viewport_height: Cell<usize>,
+    /// Typewriter scrolling, pushed in by the renderer from `config`. Also a
+    /// `Cell` for the same reason as the viewport.
+    typewriter_scroll: Cell<bool>,
 }
 
 impl Editor {
@@ -308,6 +317,7 @@ impl Editor {
             redo_stack: Vec::new(),
             viewport_width: Cell::new(0),
             viewport_height: Cell::new(0),
+            typewriter_scroll: Cell::new(false),
         }
     }
 
@@ -555,6 +565,9 @@ impl Editor {
         self.cursor_col += 1;
         self.preferred_col = None;
         self.end_edit();
+        // Follow the caret as it types, so a new wrapped row can pull the view
+        // along without waiting for the next cursor key.
+        self.ensure_scroll();
     }
 
     pub fn insert_newline(&mut self) {
@@ -621,28 +634,37 @@ impl Editor {
             self.lines[self.cursor_row].push_str(&next_line);
         }
         self.end_edit();
+        self.ensure_scroll();
     }
 
     // ─── Autocomplete ─────────────────────────────────────────
 
-    /// Collect all unique words from the document and cross-file sources (len >= 2, sorted)
-    fn collect_words(&self) -> Vec<String> {
-        let mut words: BTreeSet<String> = BTreeSet::new();
-        for line in &self.lines {
-            for word in line.split_whitespace() {
-                let cleaned = clean_word(word);
-                if cleaned.len() >= 2 {
-                    words.insert(cleaned.to_string());
-                }
-            }
+    /// Candidate completions for `prefix`, best candidate first.
+    ///
+    /// Every lexicon is fed into one weighted trie and looked up together, so
+    /// the words already in this document outrank words from recent notes,
+    /// which in turn outrank the bundled vocabulary. A brand new note still
+    /// completes, because the bundled list needs nothing from the writer's
+    /// history.
+    fn completions_for(&self, prefix: &str) -> Vec<String> {
+        if prefix.is_empty() {
+            return Vec::new();
         }
-        // Also include cross-file words from recent files
+        let mut completer = crate::dictionary::Completer::new();
         for word in &self.cross_file_words {
-            if word.len() >= 2 {
-                words.insert(word.clone());
-            }
+            completer.add(word, crate::dictionary::RECENT_WEIGHT);
         }
-        words.into_iter().collect()
+        for word in self.lines.iter().flat_map(|line| line.split_whitespace()) {
+            completer.add(word, crate::dictionary::DOCUMENT_WEIGHT);
+        }
+        completer.complete(prefix, AUTOCOMPLETE_LIMIT)
+    }
+
+    /// Forget the current completion session.
+    fn clear_completion(&mut self) {
+        self.autocomplete_matches.clear();
+        self.autocomplete_prefix.clear();
+        self.autocomplete_index = 0;
     }
 
     /// Extract the word prefix before the cursor on the current line
@@ -669,14 +691,9 @@ impl Editor {
         if prefix.is_empty() {
             return;
         }
-        let all_words = self.collect_words();
-        let prefix_lower = prefix.to_lowercase();
         let prefix_len = prefix.chars().count();
-        if let Some(matched) = all_words.into_iter().find(|w| {
-            w.to_lowercase().starts_with(&prefix_lower) && w.to_lowercase() != prefix_lower
-        }) {
-            let ghost: String = matched.chars().skip(prefix_len).collect();
-            self.ghost_suggestion = ghost;
+        if let Some(matched) = self.completions_for(&prefix).into_iter().next() {
+            self.ghost_suggestion = matched.chars().skip(prefix_len).collect();
         }
     }
 
@@ -695,8 +712,7 @@ impl Editor {
             return false;
         }
         let ghost = std::mem::take(&mut self.ghost_suggestion);
-        self.autocomplete_matches.clear();
-        self.autocomplete_prefix.clear();
+        self.clear_completion();
         self.begin_edit(EditKind::Other);
         let line = &mut self.lines[self.cursor_row];
         let byte_pos = line
@@ -712,39 +728,45 @@ impl Editor {
     }
 
     /// Attempt word autocompletion. Returns true if a completion was applied.
+    ///
+    /// The first press completes the word with the best candidate; pressing it
+    /// again walks the remaining candidates, replacing the completion each
+    /// time, so a run of presses cycles through every match.
     pub fn try_autocomplete(&mut self) -> bool {
-        let (word_start, prefix) = self.current_word_prefix();
-
-        if prefix.is_empty() {
-            self.autocomplete_matches.clear();
-            self.autocomplete_prefix.clear();
+        let (word_start, word) = self.current_word_prefix();
+        if word.is_empty() {
+            self.clear_completion();
             return false;
         }
 
-        // Same prefix as before → cycle to next match
-        if prefix == self.autocomplete_prefix && !self.autocomplete_matches.is_empty() {
+        // A press right after a completion is a request to cycle, not a fresh
+        // search: the word now under the caret is the suggestion just applied.
+        let cycling = self
+            .autocomplete_matches
+            .get(self.autocomplete_index)
+            .is_some_and(|applied| applied.eq_ignore_ascii_case(&word));
+
+        if cycling {
             self.autocomplete_index =
                 (self.autocomplete_index + 1) % self.autocomplete_matches.len();
         } else {
-            // New prefix → find fresh matches
-            let all_words = self.collect_words();
-            let prefix_lower = prefix.to_lowercase();
-            self.autocomplete_matches = all_words
-                .into_iter()
-                .filter(|w| {
-                    w.to_lowercase().starts_with(&prefix_lower) && w.to_lowercase() != prefix_lower
-                })
-                .collect();
-            if self.autocomplete_matches.is_empty() {
-                self.autocomplete_prefix.clear();
+            let matches = self.completions_for(&word);
+            if matches.is_empty() {
+                self.clear_completion();
                 return false;
             }
+            self.autocomplete_matches = matches;
             self.autocomplete_index = 0;
-            self.autocomplete_prefix = prefix.clone();
+            self.autocomplete_prefix = word.clone();
         }
 
-        // Replace the prefix with the completed word
         let completed = self.autocomplete_matches[self.autocomplete_index].clone();
+        self.replace_word(word_start, &completed);
+        true
+    }
+
+    /// Replace the word ending at the caret with `completed`.
+    fn replace_word(&mut self, word_start: usize, completed: &str) {
         self.begin_edit(EditKind::Other);
         let line = &mut self.lines[self.cursor_row];
         let byte_start = line
@@ -758,11 +780,10 @@ impl Editor {
             .map(|(i, _)| i)
             .unwrap_or(line.len());
         line.drain(byte_start..byte_end);
-        line.insert_str(byte_start, &completed);
+        line.insert_str(byte_start, completed);
         self.cursor_col = word_start + completed.chars().count();
         self.preferred_col = None;
         self.end_edit();
-        true
     }
 
     // ─── History ─────────────────────────────────────────────
@@ -847,8 +868,7 @@ impl Editor {
         self.cursor_col = snapshot.cursor_col.min(self.current_line_len());
         self.revision = snapshot.revision;
         self.preferred_col = None;
-        self.autocomplete_matches.clear();
-        self.autocomplete_prefix.clear();
+        self.clear_completion();
         // Nothing merges across an undo boundary, so the next edit is its own
         // step even when the caret lands exactly where the last run ended.
         if let Some(entry) = self.undo_stack.last_mut() {
@@ -880,10 +900,20 @@ impl Editor {
     }
 
     /// Keep the caret inside the wrapped viewport, in rendered rows.
+    ///
+    /// Normally the view stays put until the caret would leave it. With
+    /// typewriter scrolling on, the caret is instead held around the middle of
+    /// the screen: writing at the bottom pulls the text up past the writer
+    /// rather than letting the caret sink to the last row.
     fn ensure_scroll(&mut self) {
         let width = self.viewport_width.get();
         let height = self.viewport_height.get().max(1);
         let caret = self.cursor_visual_row(width);
+        if self.typewriter_scroll.get() {
+            let last_screen = self.total_visual_rows(width).saturating_sub(height);
+            self.scroll_row = caret.saturating_sub(height / 2).min(last_screen);
+            return;
+        }
         if caret < self.scroll_row {
             self.scroll_row = caret;
         }
@@ -899,6 +929,12 @@ impl Editor {
         self.viewport_height.set(height);
     }
 
+    /// Turn typewriter scrolling on or off; the renderer pushes this in from
+    /// `config` each frame.
+    pub fn set_typewriter_scroll(&self, on: bool) {
+        self.typewriter_scroll.set(on);
+    }
+
     /// The rows the renderer should draw, starting at the top of the viewport.
     ///
     /// `count` bounds the work to the visible screen instead of the whole
@@ -910,10 +946,6 @@ impl Editor {
         for row in 0..self.lines.len() {
             let segments = self.segments(row, width);
             let last_segment = segments.len() - 1;
-            let next_line_blank = self
-                .lines
-                .get(row + 1)
-                .is_none_or(|next| next.trim().is_empty());
             for (index, (start, end)) in segments.into_iter().enumerate() {
                 if visual >= self.scroll_row {
                     let caret = (row == self.cursor_row && index == caret_segment)
@@ -922,7 +954,9 @@ impl Editor {
                         row,
                         start,
                         end,
-                        continues: !(index == last_segment && next_line_blank),
+                        // A typed line ends a paragraph, so only the rows that
+                        // soft wrapping pushed down continue it.
+                        continues: index < last_segment,
                         caret,
                     });
                     if rows.len() >= count {
@@ -1096,6 +1130,18 @@ mod tests {
         assert!(!should_justify("hello world", 20, false));
         assert!(!should_justify("hello world", 11, true)); // already full
         assert!(!should_justify("word", 20, true)); // no interior gap
+    }
+
+    #[test]
+    fn a_short_typed_line_is_never_stretched() {
+        // The end of a soft-wrapped paragraph and a whole typed line both have
+        // no row below them, so neither is a justification candidate.
+        assert!(!should_justify("a short line here", 80, false));
+        assert!(should_justify(
+            "a short line in a wrapping paragraph",
+            80,
+            true
+        ));
     }
 
     #[test]
@@ -1304,11 +1350,131 @@ mod tests {
     }
 
     #[test]
+    fn only_wrapped_continuation_rows_are_justifiable() {
+        let mut editor = Editor::new();
+        editor.set_content("first line\nsecond line that wraps over several rows");
+        let rows = editor.visible_rows(10, 15);
+        let justifiable: Vec<bool> = rows.iter().map(|row| row.continues).collect();
+        // `first line` is a whole paragraph, and `rows` ends the wrapped one.
+        assert_eq!(justifiable, vec![false, true, true, true, false]);
+    }
+
+    #[test]
     fn visible_rows_stop_at_the_screenful() {
         // Width 4 hard-breaks "three" into "thre" + "e", giving 4 rows.
         let mut editor = Editor::new();
         editor.set_content("one two three");
         assert_eq!(editor.visible_rows(3, 4).len(), 3);
         assert_eq!(editor.visible_rows(99, 4).len(), 4);
+    }
+
+    #[test]
+    fn completion_draws_on_built_in_words_not_just_the_document() {
+        let mut editor = Editor::new();
+        editor.set_content("rec");
+        editor.move_line_end();
+        editor.refresh_ghost();
+        // Nothing in the buffer can complete "rec", so the bundled list must.
+        assert!(!editor.ghost_suggestion.is_empty());
+        assert!(editor
+            .ghost_suggestion
+            .chars()
+            .all(|c| c.is_ascii_alphabetic()));
+    }
+
+    #[test]
+    fn completion_prefers_a_word_already_in_the_document() {
+        let mut editor = Editor::new();
+        editor.set_content("serendipity\nseren");
+        editor.cursor_row = 1;
+        editor.cursor_col = 5;
+        editor.refresh_ghost();
+        assert_eq!(editor.ghost_suggestion, "dipity");
+    }
+
+    #[test]
+    fn autocomplete_completes_the_word_under_the_caret() {
+        let mut editor = Editor::new();
+        editor.set_content("serendipity\nseren");
+        editor.cursor_row = 1;
+        editor.cursor_col = 5;
+        assert!(editor.try_autocomplete());
+        assert_eq!(editor.lines[1], "serendipity");
+    }
+
+    #[test]
+    fn autocomplete_cycles_between_candidates() {
+        let mut editor = Editor::new();
+        editor.set_content("serenade\nserendipity\nseren");
+        editor.cursor_row = 2;
+        editor.cursor_col = 5;
+        assert!(editor.try_autocomplete());
+        let first = editor.lines[2].clone();
+        assert!(editor.try_autocomplete());
+        let second = editor.lines[2].clone();
+        assert_ne!(first, second);
+        assert!(first.starts_with("seren") && second.starts_with("seren"));
+        assert_eq!(editor.autocomplete_matches.len(), 2);
+    }
+
+    #[test]
+    fn completion_matches_the_prefix_capitalisation() {
+        let mut editor = Editor::new();
+        editor.set_content("Ther");
+        editor.move_line_end();
+        assert!(editor.try_autocomplete());
+        assert!(editor.lines[0].starts_with("Ther"));
+        assert!(editor.lines[0].chars().next().unwrap().is_uppercase());
+        assert!(editor.lines[0].to_lowercase().starts_with("ther"));
+    }
+
+    #[test]
+    fn completion_candidates_stay_bounded() {
+        let mut editor = Editor::new();
+        editor.set_content("a");
+        editor.move_line_end();
+        assert!(editor.try_autocomplete());
+        assert!(!editor.autocomplete_matches.is_empty());
+        assert!(editor.autocomplete_matches.len() <= AUTOCOMPLETE_LIMIT);
+    }
+
+    fn numbered_lines(count: usize) -> String {
+        (0..count).map(|i| format!("line {}\n", i)).collect()
+    }
+
+    #[test]
+    fn typewriter_scroll_holds_the_caret_mid_screen() {
+        let mut editor = Editor::new();
+        editor.set_content(&numbered_lines(30));
+        editor.set_viewport(40, 9);
+        editor.set_typewriter_scroll(true);
+        editor.cursor_row = 20;
+        editor.move_line_end(); // any move re-scrolls the view
+        assert_eq!(editor.scroll_row, 20 - 9 / 2);
+    }
+
+    #[test]
+    fn typewriter_scroll_is_off_by_default() {
+        let mut editor = Editor::new();
+        editor.set_content(&numbered_lines(30));
+        editor.set_viewport(40, 9);
+        editor.cursor_row = 20;
+        editor.move_line_end();
+        // Without typewriter scrolling the view only moves when it must, so the
+        // caret sits on the bottom row rather than the middle.
+        assert_eq!(editor.scroll_row, 20 + 1 - 9);
+    }
+
+    #[test]
+    fn typing_follows_the_caret_into_new_wrapped_rows() {
+        let mut editor = Editor::new();
+        editor.set_viewport(4, 2);
+        editor.set_typewriter_scroll(true);
+        for _ in 0..20 {
+            editor.insert_char('x');
+        }
+        // The caret wrapped far past the first screen; the view came along
+        // instead of being stuck at the top.
+        assert!(editor.scroll_row > 0);
     }
 }

@@ -8,6 +8,7 @@ pub const COMMANDS: &[&str] = &[
     "new note",
     "open note",
     "toggle wrap",
+    "toggle typewriter scroll",
     "toggle line numbers",
     "export html",
     "align left",

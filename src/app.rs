@@ -29,6 +29,11 @@ pub enum Mode {
 /// How often the writing statistics are written out while the app runs.
 const STATS_FLUSH: Duration = Duration::from_secs(20);
 
+/// How often the in-progress buffer is written to the crash draft. Cheap
+/// enough to run often, so a crash costs a few seconds of typing rather than
+/// everything since the last save — and independent of the autosave setting.
+const DRAFT_FLUSH: Duration = Duration::from_secs(3);
+
 /// One row of the goals screen's day list.
 pub struct DayRow {
     /// `today`, `yesterday`, or `MM-DD`.
@@ -61,6 +66,8 @@ pub struct App {
     pub has_recovery: bool,
     pub recovery_path: String,
     pub recovery_index: usize,
+    /// The unsaved buffer a previous run left behind, restored on request.
+    pub recovery_draft: Option<String>,
 
     // Recent notes index
     pub recent_index: usize,
@@ -68,6 +75,9 @@ pub struct App {
     // Autosave
     pub last_autosave: Instant,
     pub last_save: Instant,
+    /// When the crash draft was last written, and the revision it captured.
+    last_draft: Instant,
+    drafted_revision: u64,
 
     // Writing statistics (see the goals screen)
     last_tick: Instant,
@@ -103,6 +113,7 @@ impl App {
             has_recovery: false,
             recovery_path: String::new(),
             recovery_index: 0,
+            recovery_draft: None,
             recent_index: 0,
             last_autosave: Instant::now(),
             last_save: Instant::now(),
@@ -113,6 +124,9 @@ impl App {
             counted_revision: 0,
             last_stats_save: Instant::now(),
             stats_dirty: false,
+            last_draft: Instant::now(),
+            // Past every real revision, so the first change is always written.
+            drafted_revision: u64::MAX,
         }
     }
 
@@ -127,13 +141,7 @@ impl App {
         // Carry today's writing time over from earlier runs.
         self.today_millis = self.storage.today().seconds * 1000;
 
-        if let Some(path) = &self.storage.last_session_file {
-            if std::path::Path::new(path).exists() {
-                self.has_recovery = true;
-                self.recovery_path = path.clone();
-                self.mode = Mode::RecoveryPrompt;
-            }
-        }
+        self.check_recovery();
 
         self.apply_theme();
 
@@ -150,16 +158,64 @@ impl App {
 
     pub fn apply_theme(&mut self) {}
 
+    /// Offer to restore an unsaved buffer left by a crash.
+    ///
+    /// A draft is only written while the editor has unsaved changes, so one
+    /// still sitting on disk means the previous run ended abruptly. The draft's
+    /// own copy of the text is what gets recovered — not the file, which may
+    /// never have been written.
+    fn check_recovery(&mut self) {
+        match crate::storage::Draft::load() {
+            Some(draft) => {
+                self.recovery_draft = Some(draft.content.clone());
+                self.recovery_path = draft.path.clone().unwrap_or_default();
+                self.has_recovery = true;
+                self.mode = Mode::RecoveryPrompt;
+            }
+            // No draft, or one that matches the file on disk — drop the stale
+            // file so it is not inspected again next launch.
+            None => crate::storage::Draft::clear(),
+        }
+    }
+
+    /// The name shown on the recovery prompt, when one is up.
+    pub fn recovery_display_name(&self) -> String {
+        if self.recovery_path.is_empty() {
+            return "untitled".to_string();
+        }
+        std::path::Path::new(&self.recovery_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| self.recovery_path.clone())
+    }
+
     /// Leave the application, writing the open buffer first so nothing typed is
     /// lost. Every exit path goes through here.
     pub fn quit(&mut self) {
         if self.editor.is_modified() {
             self.save_current_file();
         }
+        // A clean exit never needs the crash draft — if the buffer could not be
+        // written, it is still modified and the draft is kept for next launch.
+        // A prompt that was dismissed with `Esc` also keeps the draft, so the
+        // recoverable text is still there when the app is restarted.
+        if !self.editor.is_modified() && !self.has_recovery {
+            crate::storage::Draft::clear();
+        }
         self.should_quit = true;
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        // F1 toggles the keymap reference from anywhere, like the menu's `h`.
+        if key.code == KeyCode::F(1) {
+            if self.mode == Mode::Help {
+                self.mode = Mode::Startup;
+            } else {
+                self.open_help();
+            }
+            return true;
+        }
+
         // Global shortcuts
         if key.modifiers == KeyModifiers::CONTROL {
             match key.code {
@@ -187,6 +243,14 @@ impl App {
                 }
                 KeyCode::Char('f') => {
                     self.open_search();
+                    return true;
+                }
+                KeyCode::Char('r') => {
+                    self.open_recent_notes();
+                    return true;
+                }
+                KeyCode::Char('g') => {
+                    self.mode = Mode::Goals;
                     return true;
                 }
                 _ => {}
@@ -251,6 +315,11 @@ impl App {
             FolderSelectAction::FilterChanged => {
                 self.filter_folder_select_items();
             }
+            FolderSelectAction::OpenDrives => self.open_folder_drives(),
+            FolderSelectAction::CloseDrives => {
+                self.folder_select.drives_open = false;
+            }
+            FolderSelectAction::SelectDrive => self.confirm_folder_drive(),
             FolderSelectAction::None => {}
         }
         true
@@ -441,6 +510,11 @@ impl App {
             BrowserAction::FilterChanged => {
                 self.filter_browser_items();
             }
+            BrowserAction::OpenDrives => self.open_browser_drives(),
+            BrowserAction::CloseDrives => {
+                self.browser.drives_open = false;
+            }
+            BrowserAction::SelectDrive => self.confirm_browser_drive(),
             _ => {}
         }
         true
@@ -546,19 +620,60 @@ impl App {
             }
             KeyCode::Enter => {
                 if self.recovery_index == 0 {
-                    self.open_file(&self.recovery_path.clone());
+                    self.restore_session();
                 } else {
+                    // Declining is permanent: forget the draft so the prompt
+                    // does not come back on the next launch.
+                    crate::storage::Draft::clear();
+                    self.recovery_draft = None;
                     self.storage.last_session_file = None;
                     self.has_recovery = false;
+                    self.mode = Mode::Startup;
                 }
-                self.mode = Mode::Startup;
             }
             KeyCode::Esc => {
+                // Hide the prompt for this run only; the draft stays behind, so
+                // the work is still there if the app is restarted.
                 self.mode = Mode::Startup;
             }
             _ => {}
         }
         true
+    }
+
+    /// Put the crashed run's unsaved text back into a fresh editor.
+    fn restore_session(&mut self) {
+        self.has_recovery = false;
+        let Some(content) = self.recovery_draft.take() else {
+            // Nothing buffered — fall back to simply reopening the file.
+            if self.recovery_path.is_empty() {
+                self.mode = Mode::Startup;
+            } else {
+                self.open_file(&self.recovery_path.clone());
+            }
+            return;
+        };
+
+        let path = if self.recovery_path.is_empty() {
+            None
+        } else {
+            Some(self.recovery_path.clone())
+        };
+        self.editor = Editor::new();
+        self.editor.file_path = path.clone();
+        self.editor.set_content(&content);
+        // The recovered text is deliberately *not* the file's saved state, so
+        // the modified marker is honest and a save writes it out.
+        self.editor.mark_unsaved();
+        if let Some(path) = &path {
+            self.load_cross_file_words(path);
+            self.storage.track_file(path);
+            self.note_document(path);
+            self.storage.last_session_file = Some(path.clone());
+        }
+        self.reset_word_baseline();
+        self.mode = Mode::Editor;
+        self.show_status("recovered unsaved session");
     }
 
     fn dispatch_goals(&mut self, key: KeyEvent) -> bool {
@@ -602,6 +717,7 @@ impl App {
     pub fn new_note(&mut self) {
         // Choose the destination folder first, then create the note there.
         self.folder_select.path = self.config.default_folder.clone();
+        self.folder_select.drives_open = false;
         self.refresh_folder_select();
         self.mode = Mode::FolderSelect;
     }
@@ -632,6 +748,27 @@ impl App {
             }
             self.folder_select.items.extend(dirs);
         }
+    }
+
+    /// List the volume roots the system can see and show them over the folder
+    /// list, so a note can be created on a USB stick or external SSD.
+    fn open_folder_drives(&mut self) {
+        self.folder_select.drives = crate::drives::list_drives();
+        self.folder_select.drives_index = 0;
+        if self.folder_select.drives.is_empty() {
+            self.show_status("no drives found");
+            return;
+        }
+        self.folder_select.drives_open = true;
+    }
+
+    fn confirm_folder_drive(&mut self) {
+        if let Some(drive) = self.folder_select.drives.get(self.folder_select.drives_index) {
+            self.folder_select.path = drive.path.clone();
+        }
+        self.folder_select.drives_open = false;
+        self.folder_select.index = 0;
+        self.refresh_folder_select();
     }
 
     fn filter_folder_select_items(&mut self) {
@@ -687,6 +824,7 @@ impl App {
 
     pub fn open_file_browser(&mut self) {
         self.browser.path = self.config.default_folder.clone();
+        self.browser.drives_open = false;
         self.refresh_browser();
         self.browser.index = 0;
         self.mode = Mode::FileBrowser;
@@ -718,6 +856,27 @@ impl App {
             self.browser.items.extend(dirs);
             self.browser.items.extend(files);
         }
+    }
+
+    /// List the volume roots the system can see and show them over the file
+    /// list, so notes on a USB stick, SD card, or external SSD are reachable.
+    fn open_browser_drives(&mut self) {
+        self.browser.drives = crate::drives::list_drives();
+        self.browser.drives_index = 0;
+        if self.browser.drives.is_empty() {
+            self.show_status("no drives found");
+            return;
+        }
+        self.browser.drives_open = true;
+    }
+
+    fn confirm_browser_drive(&mut self) {
+        if let Some(drive) = self.browser.drives.get(self.browser.drives_index) {
+            self.browser.path = drive.path.clone();
+        }
+        self.browser.drives_open = false;
+        self.browser.index = 0;
+        self.refresh_browser();
     }
 
     fn filter_browser_items(&mut self) {
@@ -866,6 +1025,16 @@ impl App {
                 self.config.wrap = !self.config.wrap;
                 self.mode = Mode::Editor;
             }
+            "toggle typewriter scroll" => {
+                self.config.typewriter_scroll = !self.config.typewriter_scroll;
+                self.mode = Mode::Editor;
+                let state = if self.config.typewriter_scroll {
+                    "on"
+                } else {
+                    "off"
+                };
+                self.show_status(&format!("typewriter scroll: {}", state));
+            }
             "toggle line numbers" => {
                 self.config.line_numbers = match self.config.line_numbers.as_str() {
                     "off" => "absolute".to_string(),
@@ -966,6 +1135,9 @@ impl App {
                     self.show_status("saved");
                     self.storage.track_file(path);
                     self.storage.last_session_file = Some(path.clone());
+                    // The file now holds everything, so there is nothing left to
+                    // recover from a crash.
+                    crate::storage::Draft::clear();
                 } else {
                     if std::fs::write(path, &content).is_ok() {
                         self.editor.mark_saved();
@@ -973,6 +1145,7 @@ impl App {
                         self.show_status("saved");
                         self.storage.track_file(path);
                         self.storage.last_session_file = Some(path.clone());
+                        crate::storage::Draft::clear();
                     }
                     let _ = std::fs::remove_file(&tmp_path);
                 }
@@ -980,11 +1153,12 @@ impl App {
         }
     }
 
-    /// Per-frame upkeep: note time spent writing, flush the statistics, then
-    /// consider autosaving.
+    /// Per-frame upkeep: note time spent writing, flush the statistics, keep
+    /// the crash draft current, then consider autosaving.
     pub fn tick(&mut self) {
         self.track_writing();
         self.flush_stats();
+        self.draft_tick();
         self.autosave_tick();
     }
 
@@ -1049,6 +1223,40 @@ impl App {
     fn reset_word_baseline(&mut self) {
         self.counted_words = self.editor.word_count();
         self.counted_revision = self.editor.revision();
+        // A new document restarts revisions at zero, so let its first change
+        // write a fresh draft rather than matching the old revision number.
+        self.drafted_revision = u64::MAX;
+    }
+
+    /// Keep the crash draft in step with the buffer, whether the editor or the
+    /// menu is showing. Throttled so a fast typist causes a write every few
+    /// seconds, not every frame.
+    fn draft_tick(&mut self) {
+        if !self.editor.is_modified() {
+            return;
+        }
+        if self.editor.revision() == self.drafted_revision {
+            return;
+        }
+        if self.last_draft.elapsed() < DRAFT_FLUSH {
+            return;
+        }
+        let draft = crate::storage::Draft {
+            path: self.editor.file_path.clone(),
+            content: self.editor.get_content(),
+        };
+        // An empty buffer has nothing to recover, so do not leave a draft that
+        // would prompt on startup.
+        if draft.content.trim().is_empty() {
+            crate::storage::Draft::clear();
+            self.drafted_revision = self.editor.revision();
+            self.last_draft = Instant::now();
+            return;
+        }
+        if draft.save().is_ok() {
+            self.drafted_revision = self.editor.revision();
+            self.last_draft = Instant::now();
+        }
     }
 
     /// Record that a document was opened today. Worth persisting, so the day's
@@ -1195,6 +1403,13 @@ impl App {
                     "spaces".into()
                 }
             }
+            "typewriter scroll" => {
+                if self.config.typewriter_scroll {
+                    "on".into()
+                } else {
+                    "off".into()
+                }
+            }
             _ => String::new(),
         }
     }
@@ -1216,6 +1431,7 @@ impl App {
             "tabs/spaces" => {
                 self.config.use_tabs = value == "tabs";
             }
+            "typewriter scroll" => self.config.typewriter_scroll = value == "on",
             _ => {}
         }
     }
@@ -1377,6 +1593,41 @@ mod tests {
         );
         assert!(!app.editor.is_modified());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn restoring_a_draft_keeps_the_unsaved_text() {
+        let mut app = App::new();
+        app.recovery_draft = Some("typed but never saved".to_string());
+        app.recovery_path = String::new();
+        app.has_recovery = true;
+
+        app.restore_session();
+
+        assert_eq!(app.editor.get_content(), "typed but never saved");
+        // The recovered text is not the file's saved state, so a save writes it.
+        assert!(app.editor.is_modified());
+        assert_eq!(app.mode, Mode::Editor);
+        assert!(!app.has_recovery);
+    }
+
+    #[test]
+    fn f1_toggles_the_help_screen() {
+        let mut app = App::new();
+        app.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Help);
+        app.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Startup);
+    }
+
+    #[test]
+    fn ctrl_r_and_ctrl_g_open_their_screens_from_anywhere() {
+        let mut app = App::new();
+        app.mode = Mode::Editor;
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, Mode::Goals);
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, Mode::RecentNotes);
     }
 
     #[test]

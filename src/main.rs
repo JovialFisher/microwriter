@@ -1,4 +1,5 @@
 use crossterm::{
+    cursor::SetCursorStyle,
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -8,6 +9,8 @@ use std::{io, time::Duration};
 
 mod app;
 mod config;
+mod dictionary;
+mod drives;
 mod editor;
 mod export;
 mod states;
@@ -53,10 +56,32 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
+        SetCursorStyle::DefaultUserShape,
         LeaveAlternateScreen,
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
+    Ok(())
+}
+
+/// Match the terminal cursor shape to the `cursor_style` setting. The escape
+/// is written only when the choice changes, so it is not re-sent every frame.
+fn apply_cursor_style(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    style: &str,
+    applied: &mut String,
+) -> io::Result<()> {
+    if applied == style {
+        return Ok(());
+    }
+    let shape = match style {
+        "beam" => SetCursorStyle::SteadyBar,
+        "underline" => SetCursorStyle::SteadyUnderScore,
+        _ => SetCursorStyle::SteadyBlock,
+    };
+    execute!(terminal.backend_mut(), shape)?;
+    applied.clear();
+    applied.push_str(style);
     Ok(())
 }
 
@@ -65,7 +90,9 @@ fn run_app(
     app: &mut App,
     tick_rate: Duration,
 ) -> io::Result<()> {
+    let mut applied_cursor = String::new();
     loop {
+        apply_cursor_style(terminal, &app.config.cursor_style, &mut applied_cursor)?;
         terminal.draw(|f| ui::render(f, app))?;
 
         if event::poll(tick_rate)? {

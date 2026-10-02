@@ -12,6 +12,38 @@ use unicode_width::UnicodeWidthStr;
 /// Version codename for the current release.
 pub const VERSION_CODENAME: &str = "v1.0.0 \"White Mesa\"";
 
+/// Widest the interface ever grows. Past this a line would stretch across a
+/// wide terminal, so the app is held to a centred column with even side
+/// margins instead — the writing surface, lists, and separators all share it.
+const MAX_CONTENT_WIDTH: u16 = 100;
+
+/// Centre the interface in `area`, capping its width. Narrow terminals are
+/// untouched; wide ones get balanced margins instead of edge-to-edge text.
+fn content_area(area: Rect) -> Rect {
+    let width = area.width.min(MAX_CONTENT_WIDTH);
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        width,
+        ..area
+    }
+}
+
+/// Pad every line with trailing spaces until the block is one width, so a
+/// centred paragraph keeps its selection bars and columns aligned instead of
+/// letting each line drift to its own centre.
+fn pad_lines_to_block(lines: &mut [Line], pad_color: Color) {
+    let total = lines.iter().map(|line| line.width()).max().unwrap_or(0);
+    for line in lines.iter_mut() {
+        let pad = total - line.width();
+        if pad > 0 {
+            line.spans.push(Span::styled(
+                " ".repeat(pad),
+                Style::default().fg(pad_color),
+            ));
+        }
+    }
+}
+
 /// Map the document alignment onto ratatui's line alignment. Justified text is
 /// widened ahead of time by the editor, so it renders as left-aligned text.
 fn ratatui_alignment(alignment: TextAlign) -> Alignment {
@@ -28,9 +60,20 @@ pub fn render(f: &mut Frame, app: &App) {
 
     let area = f.area();
 
-    // Apply background
+    // Apply background across the whole terminal, then hold every screen to a
+    // centred column so a wide terminal shows even margins rather than text
+    // pinned to the edges.
     let bg_block = Block::default().style(Style::default().bg(bg).fg(fg));
     f.render_widget(bg_block, area);
+
+    let area = content_area(area);
+
+    // The command palette dims the whole terminal, margins included, before it
+    // draws its centred box.
+    if matches!(app.mode, Mode::CommandPalette) {
+        let overlay = Block::default().style(Style::default().bg(Color::Black));
+        f.render_widget(overlay, f.area());
+    }
 
     match app.mode {
         Mode::Startup => render_startup(f, app, area),
@@ -85,7 +128,7 @@ fn render_startup(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(tagline, v_chunks[2]);
 
     // Menu
-    let menu_lines: Vec<Line> = app
+    let mut menu_lines: Vec<Line> = app
         .menu
         .items
         .iter()
@@ -105,6 +148,9 @@ fn render_startup(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
+    // Padding the menu to one width keeps its `>` markers in a column while
+    // the block stays centred.
+    pad_lines_to_block(&mut menu_lines, dim);
     let menu = Paragraph::new(menu_lines).alignment(Alignment::Center);
     f.render_widget(menu, v_chunks[4]);
 
@@ -154,19 +200,26 @@ fn render_editor(f: &mut Frame, app: &App, area: Rect) {
     let cursor_line = app.editor.cursor_row + 1;
     app.editor
         .set_viewport(wrap_width, editor_area.height as usize);
+    app.editor
+        .set_typewriter_scroll(app.config.typewriter_scroll);
     let mut gutter_lines: Vec<Line> = Vec::new();
     let mut text_lines: Vec<Line> = Vec::new();
     let mut caret_column = 0usize;
+    // Where the terminal's own cursor should sit once the frame is drawn.
+    let mut caret_x = text_area.x;
+    let mut caret_y = text_area.y;
 
-    for rendered in app
+    for (row_index, rendered) in app
         .editor
         .visible_rows(editor_area.height as usize, wrap_width)
+        .into_iter()
+        .enumerate()
     {
         let mut text = app
             .editor
             .segment_text(rendered.row, rendered.start, rendered.end);
         let mut caret = rendered.caret;
-        // Justified text fills the margin while the paragraph has a row below.
+        // Justified text fills the margin while the paragraph wraps below it.
         let justified = alignment == TextAlign::Justify
             && should_justify(&text, text_width, rendered.continues);
         if justified {
@@ -191,7 +244,8 @@ fn render_editor(f: &mut Frame, app: &App, area: Rect) {
             gutter_lines.push(Line::from(Span::styled(num_str, Style::default().fg(dim))));
         }
 
-        // Handle cursor rendering
+        // Record where the caret is so the terminal can draw its own cursor
+        // there — the shape (block / beam / underline) is the user's choice.
         let Some(offset) = caret else {
             text_lines.push(Line::from(Span::styled(text, Style::default().fg(fg))));
             continue;
@@ -200,11 +254,14 @@ fn render_editor(f: &mut Frame, app: &App, area: Rect) {
         let at: String = text.chars().skip(offset).take(1).collect();
         let after: String = text.chars().skip(offset + 1).collect();
         caret_column = UnicodeWidthStr::width(before.as_str());
-        let cursor_char = if at.is_empty() { " ".to_string() } else { at };
-        let mut spans = vec![
-            Span::styled(before, Style::default().fg(fg)),
-            Span::styled(cursor_char, Style::default().fg(fg).bg(Color::DarkGray)),
-        ];
+        let line_width = UnicodeWidthStr::width(text.as_str());
+        caret_x = text_area.x
+            + (alignment_offset(alignment, line_width, text_width) + caret_column) as u16;
+        caret_y = text_area.y + row_index as u16;
+        let mut spans = vec![Span::styled(before, Style::default().fg(fg))];
+        if !at.is_empty() {
+            spans.push(Span::styled(at, Style::default().fg(fg)));
+        }
         // Render ghost suggestion in dim gray after the cursor, when the
         // cursor is at a word boundary. A justified row has no spare room for
         // the hint, but Tab still accepts the completion.
@@ -231,6 +288,12 @@ fn render_editor(f: &mut Frame, app: &App, area: Rect) {
         .alignment(ratatui_alignment(alignment))
         .scroll((0, h_offset));
     f.render_widget(editor_para, text_area);
+    if text_width > 0 {
+        let cursor_x = caret_x
+            .saturating_sub(h_offset)
+            .clamp(text_area.x, text_area.right() - 1);
+        f.set_cursor_position((cursor_x, caret_y));
+    }
 
     // Status line
     if status_visible {
@@ -303,12 +366,17 @@ fn render_folder_select(f: &mut Frame, app: &App, area: Rect) {
     .alignment(Alignment::Center);
     f.render_widget(title, v_chunks[0]);
 
-    // Breadcrumb
+    // Breadcrumb — replaced by the overlay's title while drives are showing.
+    let breadcrumb_text = if app.folder_select.drives_open {
+        "drives".to_string()
+    } else {
+        app.folder_select.path.clone()
+    };
     let breadcrumb = Paragraph::new(Line::from(vec![Span::styled(
-        &app.folder_select.path,
+        breadcrumb_text,
         Style::default().fg(dim),
     )]))
-    .alignment(Alignment::Left);
+    .alignment(Alignment::Center);
     f.render_widget(breadcrumb, v_chunks[1]);
 
     // Separator
@@ -318,49 +386,81 @@ fn render_folder_select(f: &mut Frame, app: &App, area: Rect) {
     )]));
     f.render_widget(sep, v_chunks[2]);
 
-    // Folder list
-    let lines: Vec<Line> = app
-        .folder_select
-        .items
-        .iter()
-        .enumerate()
-        .take(v_chunks[3].height as usize)
-        .map(|(i, item)| {
-            let is_selected = i == app.folder_select.index;
-            let prefix = if is_selected { "  > " } else { "    " };
-            let style = if item == "create here" {
-                if is_selected {
-                    Style::default().fg(fg).add_modifier(Modifier::BOLD)
-                } else {
+    // Folder list, or the drive list when the overlay is showing — padded to
+    // one width so the centred block keeps its selection bars in one column.
+    let mut lines: Vec<Line> = if app.folder_select.drives_open {
+        app.folder_select
+            .drives
+            .iter()
+            .enumerate()
+            .take(v_chunks[3].height as usize)
+            .map(|(i, drive)| {
+                let is_selected = i == app.folder_select.drives_index;
+                let prefix = if is_selected { "  > " } else { "    " };
+                let style = if is_selected {
                     Style::default().fg(fg)
-                }
-            } else if item == ".." || item.ends_with('/') {
-                Style::default().fg(accent)
-            } else if is_selected {
-                Style::default().fg(fg)
-            } else {
-                Style::default().fg(dim)
-            };
-            Line::from(vec![Span::styled(prefix, style), Span::styled(item, style)])
-        })
-        .collect();
+                } else {
+                    Style::default().fg(dim)
+                };
+                Line::from(vec![
+                    Span::styled(prefix, style),
+                    Span::styled(&drive.name, style),
+                ])
+            })
+            .collect()
+    } else {
+        app.folder_select
+            .items
+            .iter()
+            .enumerate()
+            .take(v_chunks[3].height as usize)
+            .map(|(i, item)| {
+                let is_selected = i == app.folder_select.index;
+                let prefix = if is_selected { "  > " } else { "    " };
+                let style = if item == "create here" {
+                    if is_selected {
+                        Style::default().fg(fg).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(fg)
+                    }
+                } else if item == ".." || item.ends_with('/') {
+                    Style::default().fg(accent)
+                } else if is_selected {
+                    Style::default().fg(fg)
+                } else {
+                    Style::default().fg(dim)
+                };
+                Line::from(vec![Span::styled(prefix, style), Span::styled(item, style)])
+            })
+            .collect()
+    };
+    pad_lines_to_block(&mut lines, dim);
 
-    let list = Paragraph::new(lines);
+    let list = Paragraph::new(lines).alignment(Alignment::Center);
     f.render_widget(list, v_chunks[3]);
 
     // Filter line or hint
-    if app.folder_select.filtering {
+    if app.folder_select.drives_open {
+        let hint = Paragraph::new(Line::from(vec![Span::styled(
+            "\u{2191}\u{2193} drive  enter open  esc cancel",
+            Style::default().fg(dim),
+        )]))
+        .alignment(Alignment::Center);
+        f.render_widget(hint, v_chunks[4]);
+    } else if app.folder_select.filtering {
         let filter_line = Paragraph::new(Line::from(vec![
             Span::styled("/", Style::default().fg(accent)),
             Span::styled(&app.folder_select.filter, Style::default().fg(fg)),
             Span::styled("█", Style::default().fg(fg)),
-        ]));
+        ]))
+        .alignment(Alignment::Center);
         f.render_widget(filter_line, v_chunks[4]);
     } else {
         let hint = Paragraph::new(Line::from(vec![Span::styled(
-            "enter create here  / filter  h home  esc cancel",
+            "enter create here  / filter  h home  d drives  esc cancel",
             Style::default().fg(dim),
-        )]));
+        )]))
+        .alignment(Alignment::Center);
         f.render_widget(hint, v_chunks[4]);
     }
 }
@@ -371,13 +471,18 @@ fn render_focus(f: &mut Frame, app: &App, area: Rect) {
     let text_width = area.width as usize;
     let wrap_width = if app.config.wrap { text_width } else { 0 };
     app.editor.set_viewport(wrap_width, area.height as usize);
+    app.editor
+        .set_typewriter_scroll(app.config.typewriter_scroll);
     let mut caret_column = 0usize;
+    let mut caret_x = area.x;
+    let mut caret_y = area.y;
 
     let visible_lines: Vec<Line> = app
         .editor
         .visible_rows(area.height as usize, wrap_width)
         .into_iter()
-        .map(|rendered| {
+        .enumerate()
+        .map(|(row_index, rendered)| {
             let mut text = app
                 .editor
                 .segment_text(rendered.row, rendered.start, rendered.end);
@@ -397,11 +502,14 @@ fn render_focus(f: &mut Frame, app: &App, area: Rect) {
             let at: String = text.chars().skip(offset).take(1).collect();
             let after: String = text.chars().skip(offset + 1).collect();
             caret_column = UnicodeWidthStr::width(before.as_str());
-            let cursor_char = if at.is_empty() { " ".to_string() } else { at };
-            let mut spans = vec![
-                Span::styled(before, Style::default().fg(fg)),
-                Span::styled(cursor_char, Style::default().fg(fg).bg(Color::DarkGray)),
-            ];
+            let line_width = UnicodeWidthStr::width(text.as_str());
+            caret_x = area.x
+                + (alignment_offset(alignment, line_width, text_width) + caret_column) as u16;
+            caret_y = area.y + row_index as u16;
+            let mut spans = vec![Span::styled(before, Style::default().fg(fg))];
+            if !at.is_empty() {
+                spans.push(Span::styled(at, Style::default().fg(fg)));
+            }
             if after.is_empty() && !justified && !app.editor.ghost_suggestion.is_empty() {
                 spans.push(Span::styled(
                     &app.editor.ghost_suggestion,
@@ -419,6 +527,23 @@ fn render_focus(f: &mut Frame, app: &App, area: Rect) {
         .alignment(ratatui_alignment(alignment))
         .scroll((0, h_offset));
     f.render_widget(para, area);
+    if text_width > 0 {
+        let cursor_x = caret_x
+            .saturating_sub(h_offset)
+            .clamp(area.x, area.right() - 1);
+        f.set_cursor_position((cursor_x, caret_y));
+    }
+}
+
+/// Column where a line of `line_width` columns starts when the writing surface
+/// is `width` columns wide. Matches how the `Paragraph` aligns each row, so a
+/// native caret can be placed over the right character.
+fn alignment_offset(alignment: TextAlign, line_width: usize, width: usize) -> usize {
+    match alignment {
+        TextAlign::Center => width.saturating_sub(line_width) / 2,
+        TextAlign::Right => width.saturating_sub(line_width),
+        TextAlign::Left | TextAlign::Justify => 0,
+    }
 }
 
 /// Columns to slide the writing surface left so a caret past the right margin
@@ -446,12 +571,17 @@ fn render_file_browser(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    // Breadcrumb
+    // Breadcrumb — replaced by the overlay's title while drives are showing.
+    let breadcrumb_text = if app.browser.drives_open {
+        "drives".to_string()
+    } else {
+        app.browser.path.clone()
+    };
     let breadcrumb = Paragraph::new(Line::from(vec![Span::styled(
-        &app.browser.path,
+        breadcrumb_text,
         Style::default().fg(dim),
     )]))
-    .alignment(Alignment::Left);
+    .alignment(Alignment::Center);
     f.render_widget(breadcrumb, v_chunks[0]);
 
     // Separator
@@ -461,44 +591,76 @@ fn render_file_browser(f: &mut Frame, app: &App, area: Rect) {
     )]));
     f.render_widget(sep, v_chunks[1]);
 
-    // Files
-    let file_lines: Vec<Line> = app
-        .browser
-        .items
-        .iter()
-        .enumerate()
-        .take(v_chunks[2].height as usize)
-        .map(|(i, item)| {
-            let is_selected = i == app.browser.index;
-            let prefix = if is_selected { "  > " } else { "    " };
-            let style = if item.ends_with('/') || item == ".." {
-                Style::default().fg(accent)
-            } else if is_selected {
-                Style::default().fg(fg)
-            } else {
-                Style::default().fg(dim)
-            };
-            Line::from(vec![Span::styled(prefix, style), Span::styled(item, style)])
-        })
-        .collect();
+    // Files, or the drive list when the overlay is showing — padded to one
+    // width so the centred block keeps its selection bars in a single column.
+    let mut file_lines: Vec<Line> = if app.browser.drives_open {
+        app.browser
+            .drives
+            .iter()
+            .enumerate()
+            .take(v_chunks[2].height as usize)
+            .map(|(i, drive)| {
+                let is_selected = i == app.browser.drives_index;
+                let prefix = if is_selected { "  > " } else { "    " };
+                let style = if is_selected {
+                    Style::default().fg(fg)
+                } else {
+                    Style::default().fg(dim)
+                };
+                Line::from(vec![
+                    Span::styled(prefix, style),
+                    Span::styled(&drive.name, style),
+                ])
+            })
+            .collect()
+    } else {
+        app.browser
+            .items
+            .iter()
+            .enumerate()
+            .take(v_chunks[2].height as usize)
+            .map(|(i, item)| {
+                let is_selected = i == app.browser.index;
+                let prefix = if is_selected { "  > " } else { "    " };
+                let style = if item.ends_with('/') || item == ".." {
+                    Style::default().fg(accent)
+                } else if is_selected {
+                    Style::default().fg(fg)
+                } else {
+                    Style::default().fg(dim)
+                };
+                Line::from(vec![Span::styled(prefix, style), Span::styled(item, style)])
+            })
+            .collect()
+    };
+    pad_lines_to_block(&mut file_lines, dim);
 
-    let file_list = Paragraph::new(file_lines);
+    let file_list = Paragraph::new(file_lines).alignment(Alignment::Center);
     f.render_widget(file_list, v_chunks[2]);
 
-    // Search bar
-    if app.browser.searching {
+    // Search bar, drive-list hint, or the browsing hint
+    let hint_text = if app.browser.drives_open {
+        Some("\u{2191}\u{2193} drive  enter open  esc cancel".to_string())
+    } else if app.browser.searching {
+        None
+    } else {
+        Some("/ search  tab complete  h home  d drives  enter open  esc back".to_string())
+    };
+    if let Some(text) = hint_text {
+        let hint = Paragraph::new(Line::from(vec![Span::styled(
+            text,
+            Style::default().fg(dim),
+        )]))
+        .alignment(Alignment::Center);
+        f.render_widget(hint, v_chunks[3]);
+    } else {
         let search_line = Paragraph::new(Line::from(vec![
             Span::styled("/", Style::default().fg(accent)),
             Span::styled(&app.browser.search, Style::default().fg(fg)),
             Span::styled("█", Style::default().fg(fg)),
-        ]));
+        ]))
+        .alignment(Alignment::Center);
         f.render_widget(search_line, v_chunks[3]);
-    } else {
-        let hint = Paragraph::new(Line::from(vec![Span::styled(
-            "/ search  tab complete  h home  enter open  esc back",
-            Style::default().fg(dim),
-        )]));
-        f.render_widget(hint, v_chunks[3]);
     }
 }
 
@@ -534,7 +696,7 @@ fn render_search(f: &mut Frame, app: &App, area: Rect) {
     .alignment(Alignment::Center);
     f.render_widget(query_line, v_chunks[2]);
 
-    let results: Vec<Line> = app
+    let mut results: Vec<Line> = app
         .search
         .results
         .iter()
@@ -564,6 +726,7 @@ fn render_search(f: &mut Frame, app: &App, area: Rect) {
         .alignment(Alignment::Center);
         f.render_widget(empty, v_chunks[3]);
     } else {
+        pad_lines_to_block(&mut results, dim);
         let results_para = Paragraph::new(results).alignment(Alignment::Center);
         f.render_widget(results_para, v_chunks[3]);
     }
@@ -680,6 +843,7 @@ fn render_recent(f: &mut Frame, app: &App, area: Rect) {
         )]));
     }
 
+    pad_lines_to_block(&mut lines, dim);
     let recent_para = Paragraph::new(lines).alignment(Alignment::Center);
     f.render_widget(recent_para, v_chunks[3]);
 
@@ -810,10 +974,6 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect) {
     let dim = app.get_dim_color();
     let accent = app.get_accent_color();
 
-    // Darken background
-    let overlay = Block::default().style(Style::default().bg(Color::Black));
-    f.render_widget(overlay, area);
-
     // Center the palette
     let palette_width = 40u16;
     let palette_height = (app.palette.items.len() as u16 + 3).min(area.height);
@@ -915,13 +1075,17 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(sep, v_chunks[2]);
 
     let shortcuts = vec![
+        ("f1", "help"),
         ("ctrl+s", "save"),
         ("ctrl+o", "open"),
         ("ctrl+n", "new"),
+        ("ctrl+r", "recent notes"),
+        ("ctrl+f", "search"),
+        ("ctrl+g", "goals"),
         ("ctrl+p", "commands"),
         ("ctrl+q", "quit"),
-        ("ctrl+f", "search"),
         ("ctrl+l", "alignment"),
+        ("ctrl+space", "complete word"),
         ("ctrl+z / ctrl+y", "undo / redo"),
         ("esc", "menu"),
         ("ctrl+left/right", "jump words"),
@@ -961,6 +1125,7 @@ fn render_recovery(f: &mut Frame, app: &App, area: Rect) {
         .constraints([
             Constraint::Fill(1),
             Constraint::Length(1), // question
+            Constraint::Length(1), // filename
             Constraint::Length(1), // spacing
             Constraint::Length(2), // options
             Constraint::Fill(1),
@@ -968,13 +1133,20 @@ fn render_recovery(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     let question = Paragraph::new(Line::from(vec![Span::styled(
-        "recover previous session?",
+        "unsaved changes found — recover?",
         Style::default().fg(fg),
     )]))
     .alignment(Alignment::Center);
     f.render_widget(question, v_chunks[1]);
 
-    let options: Vec<Line> = ["yes", "no"]
+    let name = Paragraph::new(Line::from(vec![Span::styled(
+        app.recovery_display_name(),
+        Style::default().fg(accent),
+    )]))
+    .alignment(Alignment::Center);
+    f.render_widget(name, v_chunks[2]);
+
+    let mut options: Vec<Line> = ["yes", "no"]
         .iter()
         .enumerate()
         .map(|(i, opt)| {
@@ -989,8 +1161,9 @@ fn render_recovery(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
+    pad_lines_to_block(&mut options, dim);
     let options_para = Paragraph::new(options).alignment(Alignment::Center);
-    f.render_widget(options_para, v_chunks[3]);
+    f.render_widget(options_para, v_chunks[4]);
 }
 
 /// Days of writing history the goals screen lists.
@@ -1211,14 +1384,78 @@ mod tests {
     }
 
     #[test]
+    fn wide_terminals_centre_the_writing_surface() {
+        // 200 columns is well past the 100-column cap, so the text starts at
+        // column 50 instead of hugging the left edge.
+        let app = editor_app("hi", "left", "off");
+        let rows = draw(&app, 200, 3);
+        assert_eq!(&rows[0][..50], " ".repeat(50));
+        assert_eq!(&rows[0][50..52], "hi");
+    }
+
+    #[test]
+    fn wide_terminals_centre_a_list_block_and_its_selection_bars() {
+        // The browser list is padded to one width, so centring keeps the `>`
+        // markers in a single column rather than staggering short names.
+        let mut app = App::new();
+        app.mode = Mode::FileBrowser;
+        app.browser.items = vec!["a.txt".to_string(), "a-much-longer-name.txt".to_string()];
+        app.browser.index = 0;
+        let rows = draw(&app, 200, 6);
+        // `> a.txt` and `a-much-longer-name.txt` both start at the name column,
+        // which proves the two rows share one padded block width.
+        let name_col = |row: &str| row.find(|c: char| c.is_alphanumeric()).unwrap();
+        assert_eq!(name_col(&rows[2]), name_col(&rows[3]));
+        // The block is centred on the terminal: prefix 4 + name 22 = 26 wide.
+        assert_eq!(name_col(&rows[2]), (200 - 26) / 2 + 4);
+        assert_eq!(rows[2].trim(), "> a.txt");
+        assert_eq!(rows[3].trim(), "a-much-longer-name.txt");
+    }
+
+    #[test]
+    fn browser_drive_overlay_replaces_the_file_list() {
+        // The `d` overlay swaps the breadcrumb for "drives" and lists the
+        // volumes in place of the folder contents, so an external drive is one
+        // keypress away without a separate screen.
+        use crate::drives::Drive;
+        let mut app = App::new();
+        app.mode = Mode::FileBrowser;
+        app.browser.path = "C:\\notes".to_string();
+        app.browser.items = vec!["..".to_string(), "notes.txt".to_string()];
+        app.browser.drives = vec![
+            Drive {
+                name: "C:\\ (fixed)".to_string(),
+                path: "C:\\".to_string(),
+            },
+            Drive {
+                name: "E:\\ (removable)".to_string(),
+                path: "E:\\".to_string(),
+            },
+        ];
+        app.browser.drives_open = true;
+        app.browser.drives_index = 1;
+
+        let rows = draw(&app, 40, 6);
+        let screen = rows.join("\n");
+        assert!(screen.contains("drives"));
+        assert!(screen.contains("E:\\ (removable)"));
+        assert!(!screen.contains("notes.txt"));
+        // The highlighted line is the second drive, not the first.
+        let selected = rows.iter().find(|r| r.contains("E:\\ (removable)")).unwrap();
+        assert!(selected.contains('>'));
+    }
+
+    #[test]
     fn justification_fills_the_width_but_not_the_paragraph_end() {
-        let app = editor_app("hello world\nnext line", "justified", "off");
+        let app = editor_app("hello world how are you\nnext line", "justified", "off");
         let rows = draw(&app, 12, 4);
-        // The paragraph line fills both margins…
+        // The paragraph's wrapped rows fill both margins…
         assert_eq!(rows[0], "hello  world");
-        // …while its final line stays ragged ("next    line" would be stretched).
-        assert_eq!(rows[1], "next line   ");
-        assert_ne!(rows[1], "next    line");
+        // …while its final row stays ragged ("how  are  you" would be stretched).
+        assert_eq!(rows[1], "how are you ");
+        // A line you ended yourself is a whole paragraph, so it is never stretched.
+        assert_eq!(rows[2], "next line   ");
+        assert_ne!(rows[2], "next    line");
     }
 
     #[test]
@@ -1233,18 +1470,32 @@ mod tests {
 
     #[test]
     fn justified_caret_stays_on_its_character() {
-        // `cd` is the paragraph's last line only if another line follows it…
-        let mut app = editor_app("ab cd\nxy", "justified", "off");
-        // …so line 1 stretches to "ab    cd" and the caret (before `c`) follows.
+        // `ab cd` is the first row of a paragraph that wraps below, so it
+        // stretches to "ab    cd" and the caret (before `c`) follows it there.
+        let mut app = editor_app("ab cd ef ghij\nxy", "justified", "off");
         app.editor.cursor_col = 3;
-        let mut terminal = Terminal::new(TestBackend::new(8, 2)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(8, 3)).unwrap();
         terminal.draw(|f| render(f, &app)).unwrap();
+        // The native cursor lands on `c`, the character it belongs to.
+        let pos = terminal.get_cursor_position().unwrap();
+        assert_eq!((pos.x, pos.y), (6, 0));
         let buffer = terminal.backend().buffer();
-        let caret = (0..8u16)
-            .find(|&x| buffer[(x, 0)].bg == Color::DarkGray)
-            .expect("caret cell");
-        assert_eq!(caret, 6);
-        assert_eq!(buffer[(caret, 0)].symbol(), "c");
+        let row: String = (0..8u16).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert_eq!(row, "ab    cd");
+        assert_eq!(buffer[(6, 0)].symbol(), "c");
+    }
+
+    #[test]
+    fn centred_caret_follows_the_alignment_offset() {
+        // `hi` is centred in 12 columns (offset 5), so the caret before `i`
+        // must be placed over `i`, not at the raw column 1.
+        let mut app = editor_app("hi", "center", "off");
+        app.editor.cursor_col = 1;
+        let mut terminal = Terminal::new(TestBackend::new(12, 3)).unwrap();
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let pos = terminal.get_cursor_position().unwrap();
+        assert_eq!((pos.x, pos.y), (6, 0));
+        assert_eq!(terminal.backend().buffer()[(6, 0)].symbol(), "i");
     }
 
     #[test]
@@ -1272,11 +1523,13 @@ mod tests {
         app.editor.cursor_col = 15;
         let mut terminal = Terminal::new(TestBackend::new(10, 3)).unwrap();
         terminal.draw(|f| render(f, &app)).unwrap();
+        // The cursor is slid sideways with the text, landing on `p`, the
+        // character it belongs to.
+        let pos = terminal.get_cursor_position().unwrap();
+        assert_eq!((pos.x, pos.y), (9, 0));
         let buffer = terminal.backend().buffer();
         let row: String = (0..10u16).map(|x| buffer[(x, 0)].symbol()).collect();
         assert_eq!(row, "ghijklmnop");
-        // The caret block sits on `p`, the character it belongs to.
-        assert_eq!(buffer[(9, 0)].bg, Color::DarkGray);
         assert_eq!(buffer[(9, 0)].symbol(), "p");
     }
 
